@@ -1,0 +1,155 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc1
+  labels:
+    app: svc1
+spec:
+  ports:
+  - port: 8080
+    name: http
+  selector:
+    app: svc1
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc2
+  labels:
+    app: svc2
+spec:
+  ports:
+  - port: 8080
+    name: http
+  selector:
+    app: svc2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: be
+  labels:
+    app: be
+spec:
+  ports:
+  - name: http
+    port: 8080
+  selector:
+    app: be
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: svc1-sa
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: svc2-sa
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: be-sa
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: svc1
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: svc1
+    spec:
+      serviceAccountName: svc1-sa
+      containers:
+      - name: myapp-container
+        image: salrashid123/svc:1
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080            
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: svc2
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: svc2
+    spec:
+      serviceAccountName: svc2-sa    
+      containers:
+      - name: myapp-container
+        image: salrashid123/svc:2
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: be-v1
+  labels:
+    type: be
+    version: v1
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: be
+        version: v1
+    spec:
+      serviceAccountName: be-sa
+      containers:
+      - name: be-container
+        image: salrashid123/besvc:1
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080        
+        env:
+        - name: MY_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: MY_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: be-v2
+  labels:
+    type: be
+    version: v2
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: be
+        version: v2
+    spec:
+      serviceAccountName: be-sa
+      containers:
+      - name: be-container
+        image: salrashid123/besvc:2
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080        
+        env:
+        - name: MY_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: MY_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name

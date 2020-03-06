@@ -1,0 +1,308 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: authz-ns
+  labels:
+    istio-injection: enabled
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: ext-authz-filter
+  namespace: istio-system
+spec:
+  workloadLabels:
+    app: istio-ingressgateway
+  filters:
+  - listenerMatch:
+      listenerType: GATEWAY
+      listenerProtocol: HTTP 
+    insertPosition:
+      index: FIRST           
+    filterName: envoy.ext_authz
+    filterType: HTTP
+    filterConfig:
+      grpc_service:
+        envoy_grpc:
+          cluster_name: patched.authz.authz-ns.svc.cluster.local        
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: ext-authz-filter-cluster-patch
+  namespace: istio-system
+spec:
+  workloadLabels:
+    app: istio-ingressgateway
+  configPatches:
+  - applyTo: CLUSTER
+    match:
+      cluster:
+        service: authz.authz-ns.svc.cluster.local
+    patch:
+      operation: MERGE
+      value:
+        name: "patched.authz.authz-ns.svc.cluster.local"
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: authz
+  namespace: authz-ns
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: authz
+    spec:
+      serviceAccountName: authz-sa
+      containers:
+      - name: authz-container
+        image: salrashid123/ext-authz-server
+        volumeMounts:
+        - name: keyfile
+          mountPath: "/data/certs"
+          readOnly: true        
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 50051
+        env:
+        - name: AUTHZ_ALLOWED_USERS
+          valueFrom:
+            configMapKeyRef:
+              name: authz-config
+              key: authzallowedusers
+        - name: AUTHZ_SERVER_KEY_ID
+          valueFrom:
+            configMapKeyRef:
+              name: authz-config
+              key: authzserverkeyid
+        - name: AUTHZ_ISSUER
+          valueFrom:
+            configMapKeyRef:
+              name: authz-config
+              key: authzissuer              
+      volumes:
+      - name: keyfile
+        secret:
+          secretName: svc-secret
+---
+apiVersion: v1
+data:
+  key.pem: LS0t # << <<<<<<<< base64 encoded PEM format of service account key (nopassword) >>>
+kind: Secret
+metadata:
+  name: svc-secret
+  namespace: authz-ns
+type: Opaque
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authz-config
+  namespace: authz-ns
+data:
+  authzallowedusers: "alice,bob"
+  authzserverkeyid: "yourKeyID" # << <<<<<<<< service account keyID  >>>
+  authzissuer: "SERVICE_ACCOUNT_EMAIL" # << <<<<<<<< serviceaccounte email >>>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: authz
+  namespace: authz-ns
+  labels:
+    app: authz
+spec:
+  ports:
+  - port: 50051
+    targetPort: 50051
+    name: grpc
+  selector:
+    app: authz
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: authz-sa
+  namespace: authz-ns
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: authz-virtualservice
+  namespace: authz-ns
+spec:
+  hosts:
+  - authz
+  gateways:
+  - mesh
+  http:      
+  - route:
+    - destination:
+        host: authz   
+    match:
+    - sourceLabels:
+        app: istio-ingressgateway               
+        istio: ingressgateway
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: authz-destination
+  namespace: authz-ns
+spec:
+  host: "auth.authz-ns.svc.cluster.local"
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+---
+##  ingress --> authz
+apiVersion: authentication.istio.io/v1alpha1
+kind: Policy
+metadata:
+  name: ing-authzserver-authn-policy
+  namespace: authz-ns
+spec:
+  targets:
+  - name: authz
+  peers:
+  - mtls: {}        
+  principalBinding: USE_PEER
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+ name: ing-authzserver-authz-policy
+ namespace: authz-ns
+spec:
+ action: ALLOW
+ selector:
+   matchLabels:
+     app: authz
+ rules:
+ - from:
+   - source:
+       principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]      
+---
+## ingress --> svc1
+apiVersion: authentication.istio.io/v1alpha1
+kind: Policy
+metadata:
+  name: svc1-authz-server-policy
+  namespace: default
+spec:
+  targets:
+  - name: svc1
+  peers:
+  - mtls: {}  
+  origins:
+  - jwt:
+      issuer: "SERVICE_ACCOUNT_EMAIL" # << <<<<<<<< serviceaccounte email >>>
+      audiences:
+      - "http://svc1.default.svc.cluster.local:8080/"    
+      jwksUri: "https://www.googleapis.com/service_accounts/v1/jwk/SERVICE_ACCOUNT_EMAIL"   # << <<<<<<<< serviceaccounte email >>>        
+  principalBinding: USE_ORIGIN
+---
+## ingress --> svc2
+apiVersion: authentication.istio.io/v1alpha1
+kind: Policy
+metadata:
+  name: svc2-authz-server-policy
+  namespace: default
+spec:
+  targets:
+  - name: svc2
+  peers:
+  - mtls: {}  
+  origins:
+  - jwt:
+      issuer: "SERVICE_ACCOUNT_EMAIL" # << <<<<<<<< serviceaccounte email >>>
+      audiences:
+      - "http://svc2.default.svc.cluster.local:8080/"      
+      jwksUri: "https://www.googleapis.com/service_accounts/v1/jwk/SERVICE_ACCOUNT_EMAIL"   # << <<<<<<<< serviceaccounte email >>>        
+  principalBinding: USE_ORIGIN
+--- 
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+ name: ing-svc1-authz-policy
+ namespace: default
+spec:
+ action: ALLOW
+ selector:
+   matchLabels:
+     app: svc1
+ rules:
+ - from:
+   - source:
+       principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+ name: ing-svc2-authz-policy
+ namespace: default
+spec:
+ action: ALLOW
+ selector:
+   matchLabels:
+     app: svc2
+ rules:
+ - from:
+   - source:
+       principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+ name: deny-all-default
+ namespace: default
+spec:
+  {}
+---
+## svc --> be
+apiVersion: authentication.istio.io/v1alpha1
+kind: Policy
+metadata:
+  name: svc-be-server-policy
+  namespace: default
+spec:
+  targets:
+  - name: be
+  peers:
+  - mtls: {}  
+  principalBinding: USE_PEER
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+ name: svc1-be-v1-authz-policy
+ namespace: default
+spec:
+ action: ALLOW
+ selector:
+   matchLabels:
+     app: be
+     version: v1
+ rules:
+ - from:
+   - source:
+       principals: ["cluster.local/ns/default/sa/svc1-sa"]
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+ name: svc1-be-v2-authz-policy
+ namespace: default
+spec:
+ action: ALLOW
+ selector:
+   matchLabels:
+     app: be
+     version: v2
+ rules:
+ - from:
+   - source:
+       principals: ["cluster.local/ns/default/sa/svc1-sa"]

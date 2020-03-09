@@ -7,6 +7,8 @@ const morgan = require('morgan');
 
 const port = 8080;
 
+const FORWARD_AUTH_HEADER = process.env.FORWARD_AUTH_HEADER || 'false';
+
 app.use(
   morgan('combined')
 );
@@ -37,6 +39,8 @@ app.get('/version', (request, response) => {
 
 
 app.get('/backend', (request, response) => {
+
+
   dns.resolveSrv("_http._tcp.be.default.svc.cluster.local",  function onLookup(err, addresses, family) {
 
       if (err) {
@@ -53,8 +57,17 @@ app.get('/backend', (request, response) => {
                     'http://' + host + ':' + port + '/headerz',
         ]
 
-        urls.forEach(function(element){
-          resp_promises.push( getURL(element) )
+        out_headers = {};
+        if (FORWARD_AUTH_HEADER == 'true') {
+          var auth_header = request.headers['authorization']; 
+          logger.info("Got Authorization Header: [" + auth_header + "]");
+          out_headers = {
+              'authorization':  auth_header,
+          };
+        }
+
+        urls.forEach(element => {
+          resp_promises.push( getURL(element,out_headers) )
         });
 
         Promise.all(resp_promises).then(function(value) {
@@ -70,6 +83,7 @@ app.get('/backend', (request, response) => {
 })
 
 function getURL(u, headers) {
+  logger.info("Sending outbound Headers  --> " + JSON.stringify(headers, null, 2));
   var options = {
     method: 'GET',
     uri: u,

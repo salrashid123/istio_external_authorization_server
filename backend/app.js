@@ -36,10 +36,10 @@ app.get('/version', (request, response) => {
 })
 
 app.get('/backend', (request, response) => {
+  var auth_header = request.headers['authorization']; 
+  logger.info("Got Authorization Header: [" + auth_header + "]");
   response.send('pod: [' + process.env.MY_POD_NAME + ']    node: [' + process.env.MY_NODE_NAME + ']');
 })
-
-
 
 app.get('/headerz', (request, response) => {
   logger.info('/headerz');

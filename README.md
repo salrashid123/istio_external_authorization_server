@@ -1,6 +1,5 @@
 # External Authorization Server with Istio
 
-
 Tutorial to setup an external authorization server for istio.  In this setup, the `ingresss-gateway` will first send the inbound request headers to another istio service which check the header values submitted by the remote user/client.  If the header values passes some criteria, the external authorization server will instruct the authorization server to proceed with the request upstream.
 
 The check criteria can be anything (kerberos ticket, custom JWT) but in this example, it is the simple presence of the header value match as defined in configuration.
@@ -39,7 +38,7 @@ export SA_NAME=ext-authz-server
 export SERVICE_ACCOUNT_EMAIL=$SA_NAME@$PROJECT_ID.iam.gserviceaccount.com
 ```
 
-#### Create Service Account
+#### Create Service Account for the Authorization Server
 
 ```bash
 gcloud iam service-accounts create $SA_NAME --display-name "Ext-Authz Server Service Account"
@@ -50,11 +49,15 @@ The output should show the keyID (note this down)
 
  note the KeyID (eg)  `created key [7359f4d1a9a049b15d972b803c476f03cdd16957] of type [p12] as [svc_account.p12]`
 
+```bash
+export KEY_ID=`gcloud iam service-accounts keys  list --iam-account=$SERVICE_ACCOUNT_EMAIL --format="value(name)" --filter=keyType=USER_MANAGED`
+```
+
 Convert the key to PEM, remove the passphrase and then to base64
 
 ```bash
 openssl pkcs12 -in svc_account.p12  -nocerts -nodes -passin pass:notasecret | openssl rsa -out private.pem
-base64 -w 0 private.pem && echo
+export SVC_ACCOUNT_KEY=`base64 -w 0 private.pem && echo`
 ```
 
 Note down the base64 encoded form of the key, we will need this and the KeyID later when defining the `ConfigMap` and `Secret` for the authorization server.
@@ -69,7 +72,7 @@ The images we will use here has the following endpoints enabled:
 
 * `salrashid123/svc`: Frontend service
   - `/version`:  Displays a static "version" number for the image.  If using `salrashid123/svc:1` then the version is `1`. If using `salrashid123/svc:2` the version is `2`
-  - `/backendz`:  Makes an HTTP Ret call to the backend service's `/backend` and `/headerz` endpoints.
+  - `/backend`:  Makes an HTTP Ret call to the backend service's `/backend` and `/headerz` endpoints.
 
 * `salrashid123/besvc`: Backend Service
   - `/headerz`: Displays the http headers
@@ -124,14 +127,8 @@ kubectl create ns istio-system
 
 ### Download and install istio 1.5+
 
-As of `3/6/20`, [1.5.0](https://github.com/istio/istio/releases/tag/1.5.0-beta.4
-) is in beta so we will do this the hard way.  I'll update this tutorial when 1.5 is released.
-
 ```bash
-export ISTIO_VERSION=1.5.0-beta.4
-
-https://github.com/istio/istio/releases/download/1.5.0-beta.4/istio-1.5.0-beta.4-linux.tar.gz
-https://github.com/istio/istio/releases/download/1.5.0-beta.4/istioctl-1.5.0-beta.4-linux.tar.gz
+export ISTIO_VERSION=1.5.0
 
  wget https://github.com/istio/istio/releases/download/$ISTIO_VERSION/istio-$ISTIO_VERSION-linux.tar.gz 
  tar xvf istio-$ISTIO_VERSION-linux.tar.gz 
@@ -192,9 +189,12 @@ service/svc2         ClusterIP   10.0.29.28    <none>        8080/TCP   15s
 
 ### Deploy Istio Gateway and services
 
-```
+```bash
 kubectl apply -f istio-lb-certs.yaml
-   (wait for maybe 10s)
+sleep 10
+# regenerate the ingress-gateway to pickup the certs
+INGRESS_POD_NAME=$(kubectl get po -n istio-system | grep ingressgateway\- | awk '{print$1}'); echo ${INGRESS_POD_NAME};
+kubectl delete po/$INGRESS_POD_NAME -n istio-system
 kubectl apply -f istio-ingress-gateway.yaml
 kubectl apply -f istio-app-config.yaml
 ```
@@ -205,18 +205,18 @@ Verify traffic for the frontend and backend services.  (we're using [jq](https:/
 
 ```bash
 # Access the frontend for svc1,svc2
-curl -s --cacert certs/CA_crt.pem --resolve svc1.example.com:443:$GATEWAY_IP  https://svc1.example.com/version
-curl -s --cacert certs/CA_crt.pem --resolve svc2.example.com:443:$GATEWAY_IP  https://svc2.example.com/version
+curl -s --cacert certs/CA_crt.pem -w " %{http_code}\n" --resolve svc1.example.com:443:$GATEWAY_IP  https://svc1.example.com/version
+curl -s --cacert certs/CA_crt.pem -w " %{http_code}\n" --resolve svc2.example.com:443:$GATEWAY_IP  https://svc2.example.com/version
 
 # Access the backend through svc1,svc2
-curl -s --cacert certs/CA_crt.pem --resolve svc1.example.com:443:$GATEWAY_IP  https://svc1.example.com/backendz | jq '.'
-curl -s --cacert certs/CA_crt.pem --resolve svc2.example.com:443:$GATEWAY_IP  https://svc2.example.com/backendz
+curl -s --cacert certs/CA_crt.pem -w " %{http_code}\n" --resolve svc1.example.com:443:$GATEWAY_IP  https://svc1.example.com/backend | jq '.'
+curl -s --cacert certs/CA_crt.pem -w " %{http_code}\n" --resolve svc2.example.com:443:$GATEWAY_IP  https://svc2.example.com/backend | jq '.'
 ```
 
 If you would rather run this in a loop:
 
 ```bash
- for i in {1..1000}; do curl -s --cacert certs/CA_crt.pem --resolve svc1.example.com:443:$GATEWAY_IP  https://svc1.example.com/version; sleep 1; done
+ for i in {1..1000}; do curl -s -w " %{http_code}\n" --cacert certs/CA_crt.pem --resolve svc1.example.com:443:$GATEWAY_IP  https://svc1.example.com/version; sleep 1; done
 ```
 
 ##### Kiali Dashboard
@@ -230,66 +230,21 @@ istioctl dashboard kiali
 
 ### Generate Authz config
 
-Edit `ext_authz_filter.yaml` and apply the  `keyID` and output of the `base64` encoded PEM from the first stp
+Apply the preset environment variables to  `ext_authz_filter.yaml`:
 
-```yaml
----
-apiVersion: v1
-data:
-  key.pem: b65encoded_pem_here
-kind: Secret
-metadata:
-  name: svc-secret
-  namespace: authz-ns
-type: Opaque
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: authz-config
-  namespace: authz-ns
-data:
-  authzallowedusers: "alice,bob"
-  authzserverkeyid: "keyId_here"  <<<<<<<<<
-  authzissuer: "SERVICE_ACCOUNT_EMAIL"  <<<<<<<<<
----
-## ingress --> svc1
-apiVersion: authentication.istio.io/v1alpha1
-kind: Policy
-metadata:
-  name: svc1-authz-server-policy
-  namespace: default
-spec:
-  targets:
-  - name: svc1
-  peers:
-  - mtls: {}  
-  origins:
-  - jwt:
-      issuer: "SERVICE_ACCOUNT_EMAIL" <<<<<<<<< 
-      audiences:
-      - "http://svc1.default.svc.cluster.local:8080/"    
-      jwksUri: "https://www.googleapis.com/service_accounts/v1/jwk/SERVICE_ACCOUNT_EMAIL"  <<<<<<<<<          
-  principalBinding: USE_ORIGIN
----
-## ingress --> svc2
-apiVersion: authentication.istio.io/v1alpha1
-kind: Policy
-metadata:
-  name: svc2-authz-server-policy
-  namespace: default
-spec:
-  targets:
-  - name: svc2
-  peers:
-  - mtls: {}  
-  origins:
-  - jwt:
-      issuer: "SERVICE_ACCOUNT_EMAIL" <<<<<<<<< 
-      audiences:
-      - "http://svc2.default.svc.cluster.local:8080/"      
-      jwksUri: "https://www.googleapis.com/service_accounts/v1/jwk/SERVICE_ACCOUNT_EMAIL"  <<<<<<<<<           
-  principalBinding: USE_ORIGIN
+```bash
+export PROJECT_ID=`gcloud config get-value core/project`
+export PROJECT_NUMBER=`gcloud projects describe $PROJECT_ID --format="value(projectNumber)"`
+export SA_NAME=ext-authz-server
+export SERVICE_ACCOUNT_EMAIL=$SA_NAME@$PROJECT_ID.iam.gserviceaccount.com
+export KEY_ID=`gcloud iam service-accounts keys  list --iam-account=$SERVICE_ACCOUNT_EMAIL --format="value(name)" --filter=keyType=USER_MANAGED`
+export SVC_ACCOUNT_KEY=`base64 -w 0 private.pem && echo`
+
+echo $SERVICE_ACCOUNT_EMAIL
+echo $KEY_ID
+echo $SVC_ACCOUNT_KEY
+
+envsubst < "ext_authz_filter.yaml.tmpl" > "ext_authz_filter.yaml"
 ```
 
 ### Apply Authz config
@@ -304,18 +259,20 @@ The static/demo configuration here uses two users (`alice`, `bob`), two frontend
 
 The following conditions are coded into the authorization server:
 
-- If the authorization server sees `alice`, it issues a JWT token with `svc1` as the target
+- If the authorization server sees `alice`, it issues a JWT token with `svc1` and `be` as the targets (multiple audiences)
 - If the authorization server sees `bob`, it issues a JWT token with `svc2` as the target
-
+- If the authorization server sees `carol`, it issues a JWT token with `svc1` as the target only.
 
 ```golang
-			var aud string
+			var aud []string
 			if token == "alice" {
-				aud = "http://svc1.default.svc.cluster.local:8080/"
+				aud = []string{"http://svc1.default.svc.cluster.local:8080/", "http://be.default.svc.cluster.local:8080/"}
 			} else if token == "bob" {
-				aud = "http://svc2.default.svc.cluster.local:8080/"
+				aud = []string{"http://svc2.default.svc.cluster.local:8080/"}
+			} else if token == "carol" {
+				aud = []string{"http://svc1.default.svc.cluster.local:8080/"}
 			} else {
-				aud = ""
+				aud = []string{}
 			}
 ```
 
@@ -332,16 +289,17 @@ curl -s \
   -w " %{http_code}\n"  \
    https://svc1.example.com/version
 
->>>  1 200
-
 
 curl -s \
   --cacert certs/CA_crt.pem  --resolve svc2.example.com:443:$GATEWAY_IP \
   -H "Authorization: Bearer $USER" \
   -w " %{http_code}\n"  \
    https://svc2.example.com/version
+```
 
->>> Origin authentication failed. 401
+```
+>>> 1 200
+>>> Audiences in Jwt are not allowed 403
 ```
 
 As Bob:
@@ -355,22 +313,49 @@ curl -s \
   -w " %{http_code}\n"  \
    https://svc1.example.com/version
 
->>> Origin authentication failed. 401
 
 curl -s \
   --cacert certs/CA_crt.pem  --resolve svc2.example.com:443:$GATEWAY_IP \
   -H "Authorization: Bearer $USER" \
   -w " %{http_code}\n"  \
    https://svc2.example.com/version
+```
 
+```
+>>> Audiences in Jwt are not allowed 403
 >>> 2 200
+```
+
+As Carol
+
+```bash
+USER=carol
+
+curl -s \
+  --cacert certs/CA_crt.pem  --resolve svc1.example.com:443:$GATEWAY_IP \
+  -H "Authorization: Bearer $USER" \
+  -w " %{http_code}\n"  \
+   https://svc1.example.com/version
+
+
+curl -s \
+  --cacert certs/CA_crt.pem  --resolve svc2.example.com:443:$GATEWAY_IP \
+  -H "Authorization: Bearer $USER" \
+  -w " %{http_code}\n"  \
+   https://svc2.example.com/version
+```
+
+```
+>>> 1 200
+>>> Audiences in Jwt are not allowed 403
 ```
 
 ![images/authz_ns_flow_fe.png](images/authz_ns_flow_fe.png)
 
 >> note, it seems the traffic from the gateway to the authorization server isn't correctly detected to be associated with the ingress-gateway (maybe a bug or some label is missing)
 
-The configuration also defines Authorization policies on the service->service traffic.  Specifically, only `svc1` is allwed to connect to the backend service.  Since this is an Authorization call, the out put will be RBAC based error
+The configuration also defines Authorization policies on the service->service traffic.  Specifically, only `svc1` is allowed to connect to the backend service.
+
 
 ```bash
 USER=alice
@@ -379,7 +364,7 @@ curl -s \
   --cacert certs/CA_crt.pem  --resolve svc1.example.com:443:$GATEWAY_IP \
   -H "Authorization: Bearer $USER" \
   -w " %{http_code}\n"  \
-   https://svc1.example.com/backendz | jq '.'
+   https://svc1.example.com/backend | jq '.'
 
 
 USER=bob
@@ -388,47 +373,109 @@ curl -s \
   --cacert certs/CA_crt.pem  --resolve svc2.example.com:443:$GATEWAY_IP \
   -H "Authorization: Bearer $USER" \
   -w " %{http_code}\n"  \
-   https://svc2.example.com/backendz
-```
+   https://svc2.example.com/backend | jq '.'
 
-Sample output
+USER=carol
 
-```bash
 curl -s \
   --cacert certs/CA_crt.pem  --resolve svc1.example.com:443:$GATEWAY_IP \
   -H "Authorization: Bearer $USER" \
   -w " %{http_code}\n"  \
-   https://svc1.example.com/backendz | jq '.'
+   https://svc1.example.com/backend | jq '.'
+```
+
+Sample output
+
+-Alice
+
+Alice's TOKEN issued by the authorization server includes two audiences:
+
+```golang
+aud = []string{"http://svc1.default.svc.cluster.local:8080/", "http://be.default.svc.cluster.local:8080/"}
+```
+
+Which is allowed by backend services `RequestAuthentication` policy.
+
+```bash
+USER=alice
+curl -s \
+  --cacert certs/CA_crt.pem  --resolve svc1.example.com:443:$GATEWAY_IP \
+  -H "Authorization: Bearer $USER" \
+  -w " %{http_code}\n"  \
+   https://svc1.example.com/backend | jq '.'
 
 [
   {
     "url": "http://be.default.svc.cluster.local:8080/backend",
-    "body": "pod: [be-v1-84c45dcd84-2rwwm]    node: [gke-istio-1-default-pool-58e77124-1xw9]",
+    "body": "pod: [be-v2-64d9cf5fb4-mpsq5]    node: [gke-istio-1-default-pool-b516bc56-xz2c]",
     "statusCode": 200
   },
   {
     "url": "http://be.default.svc.cluster.local:8080/headerz",
-    "body": "{\"host\":\"be.default.svc.cluster.local:8080\",\"x-forwarded-proto\":\"http\",\"x-request-id\":\"71a8673a-7564-9edf-959d-9bc3fe00d5e0\",\"content-length\":\"0\",\"x-forwarded-client-cert\":\"By=spiffe://cluster.local/ns/default/sa/be-sa;Hash=00cba00d9f194c22ad08291149c6e54735767feaa6dc145a797d8adcc76195fa;Subject=\\\"\\\";URI=spiffe://cluster.local/ns/default/sa/svc1-sa\",\"x-b3-traceid\":\"12dcae5da349e6172dc7979181f7ec76\",\"x-b3-spanid\":\"2639cb184038b697\",\"x-b3-parentspanid\":\"2dc7979181f7ec76\",\"x-b3-sampled\":\"1\"}",
+    "body": "{\"host\":\"be.default.svc.cluster.local:8080\",\"x-forwarded-proto\":\"http\",\"x-request-id\":\"bb31942c-f04e-9b12-ba69-d68603a520af\",\"content-length\":\"0\",\"x-forwarded-client-cert\":\"By=spiffe://cluster.local/ns/default/sa/be-sa;Hash=2e0f9ca7bea6ac081f4c256de79ffdb4db2e55968b0ded2526e95cb89f4c36ac;Subject=\\\"\\\";URI=spiffe://cluster.local/ns/default/sa/svc1-sa\",\"x-b3-traceid\":\"cda6d87c8d342998ee1f797471592dff\",\"x-b3-spanid\":\"6dc54e848db21050\",\"x-b3-parentspanid\":\"ee1f797471592dff\",\"x-b3-sampled\":\"1\"}",
     "statusCode": 200
   }
 ]
+```
 
+- Bob
+
+Bob's token does not include the backend service 
+
+```golang
+aud = []string{"http://svc2.default.svc.cluster.local:8080/"}
+```
+
+Which means the `RequestAuthentication` will fail.  Bob is only allowed to invoke `svc2` anyway
+
+
+```bash
 USER=bob
 curl -s \
   --cacert certs/CA_crt.pem  --resolve svc2.example.com:443:$GATEWAY_IP \
   -H "Authorization: Bearer $USER" \
   -w " %{http_code}\n"  \
-   https://svc2.example.com/backendz  | jq '.'
+   https://svc2.example.com/backend  | jq '.'
 
 [
   {
     "url": "http://be.default.svc.cluster.local:8080/backend",
-    "body": "RBAC: access denied",
+    "body": "Audiences in Jwt are not allowed",
     "statusCode": 403
   },
   {
     "url": "http://be.default.svc.cluster.local:8080/headerz",
-    "body": "RBAC: access denied",
+    "body": "Audiences in Jwt are not allowed",
+    "statusCode": 403
+  }
+]
+```
+
+- Carol
+
+Carol's token is allowed to invoke `svc1` but does not include the issuer to pass the `RequestAuthentication` policy
+
+```golang
+aud = []string{"http://svc1.default.svc.cluster.local:8080/"}
+```
+
+```bash
+USER=carol
+curl -s \
+  --cacert certs/CA_crt.pem  --resolve svc1.example.com:443:$GATEWAY_IP \
+  -H "Authorization: Bearer $USER" \
+  -w " %{http_code}\n"  \
+   https://svc1.example.com/backend | jq '.'
+
+[
+  {
+    "url": "http://be.default.svc.cluster.local:8080/backend",
+    "body": "Audiences in Jwt are not allowed",
+    "statusCode": 403
+  },
+  {
+    "url": "http://be.default.svc.cluster.local:8080/headerz",
+    "body": "Audiences in Jwt are not allowed",
     "statusCode": 403
   }
 ]
@@ -448,9 +495,83 @@ If you would rather run these tests in a loop
 
 ---
 
-At this point, the system is setup to to always use mTLS, ORIGIN and PEER authentication plus RBAC.
+At this point, the system is setup to to always use mTLS, ORIGIN and PEER authentication plus RBAC.  If you want to verify any component of `PEER`, change the policy to change the service account that is the target service authorization policy accepts and reapply the config.  For example, to see RBAC Authorizatio fail for `alice` that currently can access the backend service, change
 
-The external server is attached to the ingress gateway but you could also attach it to a sidecar for an endpoint.  In this mode, the authorization decision is done not at the ingress gateway but locally on a service's sidecar.  To use that mode, define the `EnvoyFilter` workloadLabel and listenerType. eg:
+```yaml
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+ name: svc1-be-v1-authz-policy
+ namespace: default
+spec:
+ action: ALLOW
+ selector:
+   matchLabels:
+     app: be
+     version: v1
+ rules:
+ - from:
+   - source:
+       principals: ["cluster.local/ns/default/sa/fooooo-sa"]    #  CHANGE  PEER
+   to:
+   - operation:
+       methods: ["GET"]
+   when:
+   - key: request.auth.claims[iss]
+     values: ["$SERVICE_ACCOUNT_EMAIL"]        ##  or CHANGE ORIGIN
+   - key: request.auth.claims[aud]
+     values: ["http://be.default.svc.cluster.local:8080/"]          
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+ name: svc1-be-v2-authz-policy
+ namespace: default
+spec:
+ action: ALLOW
+ selector:
+   matchLabels:
+     app: be
+     version: v2
+ rules:
+ - from:
+   - source:
+       principals: ["cluster.local/ns/default/sa/fooooo-sa"]   # CHANGE PEER
+   to:
+   - operation:
+       methods: ["GET"]
+   when:
+   - key: request.auth.claims[iss]
+     values: ["$SERVICE_ACCOUNT_EMAIL"]        ##  or CHANGE ORIGIN
+   - key: request.auth.claims[aud]
+     values: ["http://be.default.svc.cluster.local:8080/"]            
+```
+then reapply the config and access the backend as `alice`
+
+```bash
+USER=alice
+curl -s \
+  --cacert certs/CA_crt.pem  --resolve svc1.example.com:443:$GATEWAY_IP \
+  -H "Authorization: Bearer $USER" \
+  -w " %{http_code}\n"  \
+   https://svc1.example.com/backend | jq '.'
+
+
+[
+  {
+    "url": "http://be.default.svc.cluster.local:8080/backend",
+    "body": "RBAC: access denied",
+    "statusCode": 403
+  },
+  {
+    "url": "http://be.default.svc.cluster.local:8080/headerz",
+    "body": "RBAC: access denied",
+    "statusCode": 403
+  }
+]
+```
+
+Finally, the external server is attached to the ingress gateway but you could also attach it to a sidecar for an endpoint.  In this mode, the authorization decision is done not at the ingress gateway but locally on a service's sidecar.  To use that mode, define the `EnvoyFilter` workloadLabel and listenerType. eg:
 
 ```yaml
 apiVersion: networking.istio.io/v1alpha3
@@ -477,6 +598,7 @@ spec:
 
 If you do this, you will have to setup PEER policies that allow the service to connect and use the authorization server.
 
+---
 
 ### Debugging
 
@@ -502,6 +624,19 @@ kubectl logs -f --tail=0 $INGRESS_POD_NAME -n istio-system
 istioctl dashboard envoy $INGRESS_POD_NAME.istio-system
 istioctl experimental  authz check  $INGRESS_POD_NAME.istio-system
 ```
+
+```bash
+$ istioctl experimental  authz check  $INGRESS_POD_NAME.istio-system
+Checked 2/2 listeners with node IP 10.48.2.5.
+LISTENER[FilterChain]     CERTIFICATE                                 mTLS (MODE)     JWT (ISSUERS)     AuthZ (RULES)
+0.0.0.0_80                none                                        no (none)       no (none)         no (none)
+0.0.0.0_443               /etc/istio/ingressgateway-certs/tls.crt     no (none)       no (none)         no (none)
+
+$ istioctl authn tls-check  $INGRESS_POD_NAME.istio-system authz.authz-ns.svc.cluster.local
+HOST:PORT                                  STATUS     SERVER     CLIENT     AUTHN POLICY     DESTINATION RULE
+authz.authz-ns.svc.cluster.local:50051     AUTO       STRICT     -          /default         -
+```
+
 - Authz pod
 
 ```bash
@@ -512,4 +647,29 @@ istioctl dashboard envoy $AUTHZ_POD_NAME.authnz-ns
 istioctl experimental  authz check $AUTHZ_POD_NAME.authz-ns
 ```
 
+- SVC1 pod
 
+```bash
+SVC1_POD_NAME=$(kubectl get po -n default | grep svc1\- | awk '{print$1}'); echo ${SVC1_POD_NAME};
+
+$ istioctl authn tls-check  $SVC1_POD_NAME.default be.default.svc.cluster.local
+HOST:PORT                             STATUS     SERVER     CLIENT           AUTHN POLICY     DESTINATION RULE
+be.default.svc.cluster.local:8080     OK         STRICT     ISTIO_MUTUAL     /default         default/be-destination
+```
+
+- SVC2 pod
+
+```bash
+SVC2_POD_NAME=$(kubectl get po -n default | grep svc2\- | awk '{print$1}'); echo ${SVC2_POD_NAME};
+
+$ istioctl authn tls-check  $SVC2_POD_NAME.default be.default.svc.cluster.local
+HOST:PORT                             STATUS     SERVER     CLIENT           AUTHN POLICY     DESTINATION RULE
+be.default.svc.cluster.local:8080     OK         STRICT     ISTIO_MUTUAL     /default         default/be-destination
+```
+
+### Using Google OIDC ORIGIN authentication at Ingress
+
+If you want to use OIDC JWT authentication at the ingress gateway and then have that token forwarded to the
+external authz service, apply the `RequestAuthentication` policies on the ingress gateway  as shown in the equivalent
+Envoy configuration [here](https://github.com/salrashid123/envoy_iap/blob/master/envoy_google.yaml#L32).
+You can generate an `id-token` using the script found under `jwt_client/` folder.

@@ -26,6 +26,7 @@ spec:
         envoy_grpc:
           cluster_name: patched.authz.authz-ns.svc.cluster.local        
 ---
+# https://github.com/istio/istio/issues/21841
 apiVersion: networking.istio.io/v1alpha3
 kind: EnvoyFilter
 metadata:
@@ -59,7 +60,7 @@ spec:
       serviceAccountName: authz-sa
       containers:
       - name: authz-container
-        image: salrashid123/ext-authz-server
+        image: salrashid123/ext-authz-server-test
         volumeMounts:
         - name: keyfile
           mountPath: "/data/certs"
@@ -68,11 +69,11 @@ spec:
         ports:
         - containerPort: 50051
         env:
-        - name: AUTHZ_ALLOWED_USERS
+        - name: ALLOWED_USERS
           valueFrom:
             configMapKeyRef:
               name: authz-config
-              key: authzallowedusers
+              key: allowedusers                               
         - name: AUTHZ_SERVER_KEY_ID
           valueFrom:
             configMapKeyRef:
@@ -90,7 +91,7 @@ spec:
 ---
 apiVersion: v1
 data:
-  key.pem: LS0t # << <<<<<<<< base64 encoded PEM format of service account key (nopassword) >>>
+  key.pem: $SVC_ACCOUNT_KEY
 kind: Secret
 metadata:
   name: svc-secret
@@ -103,9 +104,9 @@ metadata:
   name: authz-config
   namespace: authz-ns
 data:
-  authzallowedusers: "alice,bob"
-  authzserverkeyid: "yourKeyID" # << <<<<<<<< service account keyID  >>>
-  authzissuer: "SERVICE_ACCOUNT_EMAIL" # << <<<<<<<< serviceaccounte email >>>
+  allowedusers: "alice,bob,carol"
+  authzserverkeyid: "$KEY_ID"
+  authzissuer: "$SERVICE_ACCOUNT_EMAIL"
 ---
 apiVersion: v1
 kind: Service
@@ -159,17 +160,17 @@ spec:
       mode: ISTIO_MUTUAL
 ---
 ##  ingress --> authz
-apiVersion: authentication.istio.io/v1alpha1
-kind: Policy
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
 metadata:
-  name: ing-authzserver-authn-policy
+  name: ing-authzserver-peer-authn-policy
   namespace: authz-ns
 spec:
-  targets:
-  - name: authz
-  peers:
-  - mtls: {}        
-  principalBinding: USE_PEER
+  selector:
+    matchLabels:
+      app: authz
+  mtls:
+    mode: STRICT
 ---
 apiVersion: security.istio.io/v1beta1
 kind: AuthorizationPolicy
@@ -184,46 +185,34 @@ spec:
  rules:
  - from:
    - source:
-       principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]      
+       principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
+---
+## default deny all
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+ name: deny-all-authz-ns
+ namespace: authz-ns
+spec:
+  {} 
 ---
 ## ingress --> svc1
-apiVersion: authentication.istio.io/v1alpha1
-kind: Policy
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
 metadata:
-  name: svc1-authz-server-policy
-  namespace: default
+ name: ing-svc1-request-authn-policy
+ namespace: default
 spec:
-  targets:
-  - name: svc1
-  peers:
-  - mtls: {}  
-  origins:
-  - jwt:
-      issuer: "SERVICE_ACCOUNT_EMAIL" # << <<<<<<<< serviceaccounte email >>>
-      audiences:
-      - "http://svc1.default.svc.cluster.local:8080/"    
-      jwksUri: "https://www.googleapis.com/service_accounts/v1/jwk/SERVICE_ACCOUNT_EMAIL"   # << <<<<<<<< serviceaccounte email >>>        
-  principalBinding: USE_ORIGIN
+  selector:
+    matchLabels:
+      app: svc1
+  jwtRules:
+  - issuer: "$SERVICE_ACCOUNT_EMAIL"
+    audiences:
+    - "http://svc1.default.svc.cluster.local:8080/"  
+    jwksUri: "https://www.googleapis.com/service_accounts/v1/jwk/$SERVICE_ACCOUNT_EMAIL"
+    forwardOriginalToken: true
 ---
-## ingress --> svc2
-apiVersion: authentication.istio.io/v1alpha1
-kind: Policy
-metadata:
-  name: svc2-authz-server-policy
-  namespace: default
-spec:
-  targets:
-  - name: svc2
-  peers:
-  - mtls: {}  
-  origins:
-  - jwt:
-      issuer: "SERVICE_ACCOUNT_EMAIL" # << <<<<<<<< serviceaccounte email >>>
-      audiences:
-      - "http://svc2.default.svc.cluster.local:8080/"      
-      jwksUri: "https://www.googleapis.com/service_accounts/v1/jwk/SERVICE_ACCOUNT_EMAIL"   # << <<<<<<<< serviceaccounte email >>>        
-  principalBinding: USE_ORIGIN
---- 
 apiVersion: security.istio.io/v1beta1
 kind: AuthorizationPolicy
 metadata:
@@ -238,6 +227,31 @@ spec:
  - from:
    - source:
        principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
+   to:
+   - operation:
+       methods: ["GET"]
+   when:
+   - key: request.auth.claims[iss]
+     values: ["$SERVICE_ACCOUNT_EMAIL"]
+   - key: request.auth.claims[aud]
+     values: ["http://svc1.default.svc.cluster.local:8080/"]          
+---
+## ingress --> svc2
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+ name: ing-svc2-request-authn-policy
+ namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: svc2
+  jwtRules:
+  - issuer: "$SERVICE_ACCOUNT_EMAIL"
+    audiences:
+    - "http://svc2.default.svc.cluster.local:8080/"  
+    jwksUri: "https://www.googleapis.com/service_accounts/v1/jwk/$SERVICE_ACCOUNT_EMAIL" 
+    forwardOriginalToken: true 
 ---
 apiVersion: security.istio.io/v1beta1
 kind: AuthorizationPolicy
@@ -253,7 +267,16 @@ spec:
  - from:
    - source:
        principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
+   to:
+   - operation:
+       methods: ["GET"]
+   when:
+   - key: request.auth.claims[iss]
+     values: ["$SERVICE_ACCOUNT_EMAIL"]
+   - key: request.auth.claims[aud]
+     values: ["http://svc2.default.svc.cluster.local:8080/"]        
 ---
+## default deny all
 apiVersion: security.istio.io/v1beta1
 kind: AuthorizationPolicy
 metadata:
@@ -262,18 +285,24 @@ metadata:
 spec:
   {}
 ---
-## svc --> be
-apiVersion: authentication.istio.io/v1alpha1
-kind: Policy
+## svc --> be-v1
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
 metadata:
-  name: svc-be-server-policy
-  namespace: default
+ name: svc-be-v1-request-authn-policy
+ namespace: default
 spec:
-  targets:
-  - name: be
-  peers:
-  - mtls: {}  
-  principalBinding: USE_PEER
+  selector:
+    matchLabels:
+      app: be
+      version: v1
+  jwtRules:
+  - issuer: "$SERVICE_ACCOUNT_EMAIL"
+    audiences:
+    - "http://be.default.svc.cluster.local:8080/"   
+    jwksUri: "https://www.googleapis.com/service_accounts/v1/jwk/$SERVICE_ACCOUNT_EMAIL"  
+    # forwardOriginalToken: true
+    outputPayloadToHeader: x-jwt-payload    
 ---
 apiVersion: security.istio.io/v1beta1
 kind: AuthorizationPolicy
@@ -290,6 +319,33 @@ spec:
  - from:
    - source:
        principals: ["cluster.local/ns/default/sa/svc1-sa"]
+   to:
+   - operation:
+       methods: ["GET"]
+   when:
+   - key: request.auth.claims[iss]
+     values: ["$SERVICE_ACCOUNT_EMAIL"]
+   - key: request.auth.claims[aud]
+     values: ["http://be.default.svc.cluster.local:8080/"]        
+---
+## svc --> be-v2
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+ name: svc-be-v2-request-authn-policy
+ namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: be
+      version: v2
+  jwtRules:
+  - issuer: "$SERVICE_ACCOUNT_EMAIL"
+    audiences:
+    - "http://be.default.svc.cluster.local:8080/"   
+    jwksUri: "https://www.googleapis.com/service_accounts/v1/jwk/$SERVICE_ACCOUNT_EMAIL" 
+    # forwardOriginalToken: true
+    outputPayloadToHeader: x-jwt-payload
 ---
 apiVersion: security.istio.io/v1beta1
 kind: AuthorizationPolicy
@@ -306,3 +362,11 @@ spec:
  - from:
    - source:
        principals: ["cluster.local/ns/default/sa/svc1-sa"]
+   to:
+   - operation:
+       methods: ["GET"]
+   when:
+   - key: request.auth.claims[iss]
+     values: ["$SERVICE_ACCOUNT_EMAIL"]
+   - key: request.auth.claims[aud]
+     values: ["http://be.default.svc.cluster.local:8080/"]        

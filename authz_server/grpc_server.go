@@ -6,7 +6,6 @@ package main
 
 */
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -65,7 +64,8 @@ const (
 )
 
 type MyCustomClaims struct {
-	Uid string `json:"uid"`
+	Uid string   `json:"uid"`
+	Aud []string `json:"aud"` // https://github.com/dgrijalva/jwt-go/pull/308
 	jwt.StandardClaims
 }
 
@@ -118,13 +118,10 @@ func returnPermissionDenied(message string) *auth.CheckResponse {
 func (a *AuthorizationServer) Check(ctx context.Context, req *auth.CheckRequest) (*auth.CheckResponse, error) {
 	log.Println(">>> Authorization called check()")
 
-	b, err := json.MarshalIndent(req.Attributes.Request.Http.Headers, "", "  ")
-	if err == nil {
-		log.Println("Inbound Headers: ")
-		log.Println((string(b)))
-	}
-
 	authHeader, ok := req.Attributes.Request.Http.Headers["authorization"]
+	if !ok {
+		return returnUnAuthenticated("Unable to find Authorization Header"), nil
+	}
 	var splitToken []string
 	log.Printf("Authorization Header %s", authHeader)
 
@@ -138,20 +135,23 @@ func (a *AuthorizationServer) Check(ctx context.Context, req *auth.CheckRequest)
 
 		if stringInSlice(token, strings.Split(AUTHZ_ALLOWED_USERS, ",")) {
 
-			var aud string
+			var aud []string
 			if token == "alice" {
-				aud = "http://svc1.default.svc.cluster.local:8080/"
+				aud = []string{"http://svc1.default.svc.cluster.local:8080/", "http://be.default.svc.cluster.local:8080/"}
 			} else if token == "bob" {
-				aud = "http://svc2.default.svc.cluster.local:8080/"
+				aud = []string{"http://svc2.default.svc.cluster.local:8080/"}
+			} else if token == "carol" {
+				aud = []string{"http://svc1.default.svc.cluster.local:8080/"}
 			} else {
-				aud = ""
+				aud = []string{}
 			}
 			claims := MyCustomClaims{
 				token,
+				aud,
 				jwt.StandardClaims{
-					Issuer:    AUTHZ_ISSUER,
-					Subject:   AUTHZ_ISSUER,
-					Audience:  aud,
+					Issuer:  AUTHZ_ISSUER,
+					Subject: AUTHZ_ISSUER,
+					//Audience:  aud,
 					IssuedAt:  time.Now().Unix(),
 					ExpiresAt: time.Now().Add(time.Minute * 1).Unix(),
 				},
@@ -164,7 +164,7 @@ func (a *AuthorizationServer) Check(ctx context.Context, req *auth.CheckRequest)
 				return returnUnAuthenticated("Unable to generate JWT"), nil
 			}
 
-			glog.V(2).Infof("%v", ss)
+			log.Printf("Issuing outbound Header %s", ss)
 
 			return &auth.CheckResponse{
 				Status: &rpcstatus.Status{

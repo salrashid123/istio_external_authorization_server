@@ -52,6 +52,14 @@ kind: ServiceAccount
 metadata:
   name: be-sa
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: svc-config
+  namespace: default
+data:
+  forward_auth_header: "true"
+---
 apiVersion: extensions/v1beta1
 kind: Deployment
 metadata:
@@ -69,7 +77,13 @@ spec:
         image: salrashid123/svc:1
         imagePullPolicy: IfNotPresent
         ports:
-        - containerPort: 8080            
+        - containerPort: 8080
+        env:
+        - name: FORWARD_AUTH_HEADER
+          valueFrom:
+            configMapKeyRef:
+              name: svc-config
+              key: forward_auth_header                
 ---
 apiVersion: extensions/v1beta1
 kind: Deployment
@@ -89,6 +103,12 @@ spec:
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8080
+        env:
+        - name: FORWARD_AUTH_HEADER
+          valueFrom:
+            configMapKeyRef:
+              name: svc-config
+              key: forward_auth_header        
 ---
 apiVersion: extensions/v1beta1
 kind: Deployment

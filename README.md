@@ -255,6 +255,32 @@ Now apply the authz config
 kubectl apply -f ext_authz_filter.yaml
 ```
 
+```bash
+$ kubectl get PeerAuthentication,RequestAuthentication,AuthorizationPolicy -n authz-ns
+NAME                                                                     AGE
+peerauthentication.security.istio.io/ing-authzserver-peer-authn-policy   4m20s
+
+NAME                                                                 AGE
+authorizationpolicy.security.istio.io/deny-all-authz-ns              4m19s
+authorizationpolicy.security.istio.io/ing-authzserver-authz-policy   4m20s
+
+
+$ kubectl get PeerAuthentication,RequestAuthentication,AuthorizationPolicy -n default
+NAME                                                                     AGE
+requestauthentication.security.istio.io/ing-svc1-request-authn-policy    4m26s
+requestauthentication.security.istio.io/ing-svc2-request-authn-policy    4m26s
+requestauthentication.security.istio.io/svc-be-v1-request-authn-policy   4m26s
+requestauthentication.security.istio.io/svc-be-v2-request-authn-policy   4m26s
+
+NAME                                                            AGE
+authorizationpolicy.security.istio.io/deny-all-default          4m26s
+authorizationpolicy.security.istio.io/ing-svc1-authz-policy     4m26s
+authorizationpolicy.security.istio.io/ing-svc2-authz-policy     4m26s
+authorizationpolicy.security.istio.io/svc1-be-v1-authz-policy   93s
+authorizationpolicy.security.istio.io/svc1-be-v2-authz-policy   4m25s
+```
+
+
 The static/demo configuration here uses two users (`alice`, `bob`), two frontend services (`svc1`,`svc2`) one backend service with two labled versions (`be`, `version=v1`,`version=v2`).
 
 The following conditions are coded into the authorization server:
@@ -264,16 +290,16 @@ The following conditions are coded into the authorization server:
 - If the authorization server sees `carol`, it issues a JWT token with `svc1` as the target only.
 
 ```golang
-			var aud []string
-			if token == "alice" {
-				aud = []string{"http://svc1.default.svc.cluster.local:8080/", "http://be.default.svc.cluster.local:8080/"}
-			} else if token == "bob" {
-				aud = []string{"http://svc2.default.svc.cluster.local:8080/"}
-			} else if token == "carol" {
-				aud = []string{"http://svc1.default.svc.cluster.local:8080/"}
-			} else {
-				aud = []string{}
-			}
+var aud []string
+if token == "alice" {
+	aud = []string{"http://svc1.default.svc.cluster.local:8080/", "http://be.default.svc.cluster.local:8080/"}
+} else if token == "bob" {
+	aud = []string{"http://svc2.default.svc.cluster.local:8080/"}
+} else if token == "carol" {
+	aud = []string{"http://svc1.default.svc.cluster.local:8080/"}
+} else {
+	aud = []string{}
+}
 ```
 
 The net effect of that is `alice` can view `svc1`, `bob` can view `svc2` using `ORIGIN` authentication.

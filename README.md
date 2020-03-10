@@ -280,6 +280,7 @@ authorizationpolicy.security.istio.io/svc1-be-v1-authz-policy   93s
 authorizationpolicy.security.istio.io/svc1-be-v2-authz-policy   4m25s
 ```
 
+### Access Frontend
 
 The static/demo configuration here uses two users (`alice`, `bob`), two frontend services (`svc1`,`svc2`) one backend service with two labled versions (`be`, `version=v1`,`version=v2`).
 
@@ -380,6 +381,8 @@ curl -s \
 
 >> note, it seems the traffic from the gateway to the authorization server isn't correctly detected to be associated with the ingress-gateway (maybe a bug or some label is missing)
 
+### Access Backend
+
 The configuration also defines Authorization policies on the `svc1`-> `be` traffic using **BOTH** `PEER` and `ORIGIN`. 
 
 - `PEER`:
@@ -406,6 +409,8 @@ spec:
    - operation:
        methods: ["GET"]
 ```
+
+#### Backend PEER and ORIGIN
 
 Note the `from->source->principals` denotes  the service account `svc1` runs as.
 

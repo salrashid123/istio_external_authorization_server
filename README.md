@@ -380,8 +380,121 @@ curl -s \
 
 >> note, it seems the traffic from the gateway to the authorization server isn't correctly detected to be associated with the ingress-gateway (maybe a bug or some label is missing)
 
-The configuration also defines Authorization policies on the service->service traffic.  Specifically, only `svc1` is allowed to connect to the backend service.
+The configuration also defines Authorization policies on the `svc1`-> `be` traffic using **BOTH** `PEER` and `ORIGIN`. 
 
+- `PEER`:
+
+This is done using normal RBAC service identities:
+
+```yaml
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+ name: svc1-be-v1-authz-policy
+ namespace: default
+spec:
+ action: ALLOW
+ selector:
+   matchLabels:
+     app: be
+     version: v1
+ rules:
+ - from:
+   - source:
+       principals: ["cluster.local/ns/default/sa/svc1-sa"]
+   to:
+   - operation:
+       methods: ["GET"]
+```
+
+Note the `from->source->principals` denotes  the service account `svc1` runs as.
+
+- `ORIGIN`
+
+THis step is pretty unusual and requires some changes to application code to _forward_ its inbound authentication token. 
+
+Recall the inbound JWT token to `svc1` for `alice` includes two audiences:
+
+```golang
+	aud = []string{"http://svc1.default.svc.cluster.local:8080/", "http://be.default.svc.cluster.local:8080/"}
+```
+
+This means we can use the same JWT token on the backend service if we setup an authentication and authz rule:
+
+```yaml
+## svc --> be-v1
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+ name: svc-be-v1-request-authn-policy
+ namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: be
+      version: v1
+  jwtRules:
+  - issuer: "$SERVICE_ACCOUNT_EMAIL"
+    audiences:
+    - "http://be.default.svc.cluster.local:8080/"   
+    jwksUri: "https://www.googleapis.com/service_accounts/v1/jwk/$SERVICE_ACCOUNT_EMAIL"  
+    outputPayloadToHeader: x-jwt-payload  
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+ name: svc1-be-v1-authz-policy
+ namespace: default
+spec:
+ action: ALLOW
+ selector:
+   matchLabels:
+     app: be
+     version: v1
+ rules:
+ - from:
+   - source:
+       principals: ["cluster.local/ns/default/sa/svc1-sa"]
+   to:
+   - operation:
+       methods: ["GET"]
+   when:
+   - key: request.auth.claims[iss]
+     values: ["$SERVICE_ACCOUNT_EMAIL"]
+   - key: request.auth.claims[aud]
+     values: ["http://be.default.svc.cluster.local:8080/"]   
+```
+
+The `RequestAuthentication` accepts a JWT token signed by the external authz server and must also include the audience of the backend (which alice's token has).  The second authorization (redundantly) rule further parses out the token and looks for the same.
+
+Istio does not automatically forward the inboud token (though it maybe possble with `SIDECAR_INBOUND`->`SIDECAR_OUTBOUND` forwarding somehow...)...to achieve this requres some application code changes.  The folloing snippet is the code within `frontend/app.js` which take the token and uses it on the backend api call. 
+
+
+```javascript
+var resp_promises = []
+var urls = [
+            'http://' + host + ':' + port + '/backend',
+            'http://' + host + ':' + port + '/headerz',
+]
+
+out_headers = {};
+if (FORWARD_AUTH_HEADER == 'true') {
+    var auth_header = request.headers['authorization']; 
+    logger.info("Got Authorization Header: [" + auth_header + "]");
+      out_headers = {
+          'authorization':  auth_header,
+      };
+    }
+
+urls.forEach(element => {
+     resp_promises.push( getURL(element,out_headers) )
+});
+```
+
+>> Note: i added both ORIGIN and PEER just to demonstrate this...Until its easier forward the token by envoy/istio, i woudn't recommend doing  this bit..
+
+
+Anwyay, to test all this out
 
 ```bash
 USER=alice

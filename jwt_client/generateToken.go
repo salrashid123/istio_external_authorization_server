@@ -26,14 +26,21 @@ import (
 )
 
 /*
-   Sample test client that generates a Google OIDC token.
+   Sample test client that generates a Google OIDC token or a self-signed JWT
+
    To use, download a google serviceAccount JSON file
-   https://github.com/salrashid123/google_id_token
-   go run generateToken.go --key=your-sa.json --aud=http://foo.bar --v=10 -alsologtostderr
+
+   for OIDC:
+   go run generateToken.go --mode=oidc --key=/path/to/svc_account.json --aud=http://foo.bar --jwkUrl=https://www.googleapis.com/oauth2/v3/certs --issuer=https://accounts.google.com --v=10 -alsologtostderr
+
+   for JWT:
+   SVC_ACCOUNT_EMAIL=`cat /home/srashid/gcp_misc/certs/mineral-minutia-820-83b3ce7dcddb.json | jq -r '.client_email'`
+   export $SVC_ACCOUNT_EMAIL
+   go run generateToken.go --mode=jwt --key=/path/to/svc_account.json --aud=http://foo.bar --jwkUrl=https://www.googleapis.com/service_accounts/v1/jwk/$SVC_ACCOUNT_EMAIL --issuer=$SVC_ACCOUNT_EMAIL --v=10 -alsologtostderr
+
 */
 
 const (
-	googleRootCertURL      = "https://www.googleapis.com/oauth2/v3/certs"
 	metadataIdentityDocURL = "http://metadata/computeMetadata/v1/instance/service-accounts/default/identity"
 )
 
@@ -42,8 +49,11 @@ var (
 )
 
 type genConfig struct {
-	flkey string
-	flaud string
+	flmode   string
+	flkey    string
+	flaud    string
+	flissuer string
+	fljwkUrl string
 }
 
 func getIDTokenFromServiceAccount(ctx context.Context, svcAccountkey string, audience string) (string, error) {
@@ -146,34 +156,93 @@ func getIDTokenFromComputeEngine(ctx context.Context, audience string) (string, 
 	return bodyString, nil
 }
 
-func verifyGoogleIDToken(ctx context.Context, aud string, token string) (bool, error) {
+func verifyGoogleIDToken(ctx context.Context, jwkUrl string, aud string, issuer string, token string) (bool, error) {
 
-	keySet := oidc.NewRemoteKeySet(ctx, googleRootCertURL)
+	keySet := oidc.NewRemoteKeySet(ctx, jwkUrl)
 
 	// https://github.com/coreos/go-oidc/blob/master/verify.go#L36
 	var config = &oidc.Config{
 		SkipClientIDCheck: false,
 		ClientID:          aud,
 	}
-	verifier := oidc.NewVerifier("https://accounts.google.com", keySet, config)
-
+	verifier := oidc.NewVerifier(issuer, keySet, config)
 	idt, err := verifier.Verify(ctx, token)
 	if err != nil {
 		return false, err
 	}
-	log.Printf("Verified id_token with Issuer %v: ", idt.Issuer)
+	glog.V(2).Infof("Verified id_token with Issuer %v: ", idt.Issuer)
 	return true, nil
 }
 
+func getJWTTokenFromServiceAccount(ctx context.Context, svcAccountkey string, audience string) (string, error) {
+	data, err := ioutil.ReadFile(svcAccountkey)
+	if err != nil {
+		return "", err
+	}
+
+	conf, err := google.JWTConfigFromJSON(data, "")
+	if err != nil {
+		return "", err
+	}
+
+	header := &jws.Header{
+		Algorithm: "RS256",
+		Typ:       "JWT",
+		KeyID:     conf.PrivateKeyID,
+	}
+
+	privateClaims := map[string]interface{}{"some_claim": "some_value"}
+	iat := time.Now()
+	exp := iat.Add(time.Hour)
+
+	payload := &jws.ClaimSet{
+		Iss:           conf.Email,
+		Iat:           iat.Unix(),
+		Exp:           exp.Unix(),
+		Aud:           audience,
+		PrivateClaims: privateClaims,
+	}
+
+	key := conf.PrivateKey
+	block, _ := pem.Decode(key)
+	if block != nil {
+		key = block.Bytes
+	}
+	parsedKey, err := x509.ParsePKCS8PrivateKey(key)
+	if err != nil {
+		parsedKey, err = x509.ParsePKCS1PrivateKey(key)
+		if err != nil {
+			return "", err
+		}
+	}
+	parsed, ok := parsedKey.(*rsa.PrivateKey)
+	if !ok {
+		log.Fatal("private key is invalid")
+	}
+
+	token, err := jws.Encode(header, payload, parsed)
+	if err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
 func init() {
+	flag.StringVar(&cfg.flmode, "mode", "oidc", "(required) mode  (oidc|jwt) ")
 	flag.StringVar(&cfg.flkey, "key", "", "(required) privateKey")
 	flag.StringVar(&cfg.flaud, "aud", "", "(required) audience")
+	flag.StringVar(&cfg.flissuer, "issuer", "https://accounts.google.com", "issuer")
+	flag.StringVar(&cfg.fljwkUrl, "jwkUrl", "https://www.googleapis.com/oauth2/v3/certs", "JWK url to verify")
 
 	flag.Parse()
 
 	argError := func(s string, v ...interface{}) {
 		glog.V(2).Infof("Invalid Argument error: "+s, v...)
 		os.Exit(-1)
+	}
+
+	if cfg.flmode != "oidc" && cfg.flmode != "jwt" {
+		argError("-mode must be either oidc or jwt")
 	}
 
 	if cfg.flkey == "" {
@@ -190,18 +259,36 @@ func main() {
 
 	ctx := context.Background()
 
-	// For Service Account
-	idToken, err := getIDTokenFromServiceAccount(ctx, cfg.flkey, cfg.flaud)
+	if cfg.flmode == "oidc" {
+		// For Service Account
+		idToken, err := getIDTokenFromServiceAccount(ctx, cfg.flkey, cfg.flaud)
 
-	if err != nil {
-		glog.Fatalf("%v", err)
+		if err != nil {
+			glog.Fatalf("%v", err)
+		}
+
+		fmt.Printf("%s\n", idToken)
+
+		verified, err := verifyGoogleIDToken(ctx, cfg.fljwkUrl, cfg.flaud, cfg.flissuer, idToken)
+		if err != nil {
+			log.Fatalf("%v", err)
+		}
+		glog.V(2).Infof("Verify %v", verified)
+	} else if cfg.flmode == "jwt" {
+
+		idToken, err := getJWTTokenFromServiceAccount(ctx, cfg.flkey, cfg.flaud)
+
+		if err != nil {
+			glog.Fatalf("%v", err)
+		}
+
+		fmt.Printf("%s\n", idToken)
+
+		verified, err := verifyGoogleIDToken(ctx, cfg.fljwkUrl, cfg.flaud, cfg.flissuer, idToken)
+		if err != nil {
+			log.Fatalf("%v", err)
+		}
+		glog.V(2).Infof("Verify %v", verified)
 	}
-
-	fmt.Printf("%s\n", idToken)
-	// verified, err := verifyGoogleIDToken(ctx, cfg.flaud, idToken)
-	// if err != nil {
-	// 	log.Fatalf("%v", err)
-	// }
-	// glog.V(2).Infof("Verify %v", verified)
 
 }

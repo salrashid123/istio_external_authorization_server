@@ -59,6 +59,7 @@ metadata:
   namespace: default
 data:
   forward_auth_header: "true"
+  backend_namespace: default
 ---
 apiVersion: extensions/v1beta1
 kind: Deployment
@@ -83,7 +84,12 @@ spec:
           valueFrom:
             configMapKeyRef:
               name: svc-config
-              key: forward_auth_header                
+              key: forward_auth_header
+        - name: BACKEND_NAMESPACE
+          valueFrom:
+            configMapKeyRef:
+              name: svc-config
+              key: backend_namespace
 ---
 apiVersion: extensions/v1beta1
 kind: Deployment
@@ -108,7 +114,12 @@ spec:
           valueFrom:
             configMapKeyRef:
               name: svc-config
-              key: forward_auth_header        
+              key: forward_auth_header
+        - name: BACKEND_NAMESPACE
+          valueFrom:
+            configMapKeyRef:
+              name: svc-config
+              key: backend_namespace
 ---
 apiVersion: extensions/v1beta1
 kind: Deployment

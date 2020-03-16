@@ -8,6 +8,7 @@ const morgan = require('morgan');
 const port = 8080;
 
 const FORWARD_AUTH_HEADER = process.env.FORWARD_AUTH_HEADER || 'false';
+const BACKEND_NAMESPACE = process.env.BACKEND_NAMESPACE || 'default';
 
 app.use(
   morgan('combined')
@@ -41,7 +42,7 @@ app.get('/version', (request, response) => {
 app.get('/backend', (request, response) => {
 
 
-  dns.resolveSrv("_http._tcp.be.default.svc.cluster.local",  function onLookup(err, addresses, family) {
+  dns.resolveSrv("_http._tcp.be."+ BACKEND_NAMESPACE + ".svc.cluster.local",  function onLookup(err, addresses, family) {
 
       if (err) {
         response.send(err);

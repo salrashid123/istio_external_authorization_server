@@ -639,9 +639,49 @@ If you would rather run these tests in a loop
 
 ---
 
-At this point, the system is setup to to always use mTLS, ORIGIN and PEER authentication plus RBAC.  If you want to verify any component of `PEER`, change the policy to change the service account that is the target service authorization policy accepts and reapply the config.  For example, to see RBAC Authorizatio fail for `alice` that currently can access the backend service, change
+At this point, the system is setup to to always use mTLS, ORIGIN and PEER authentication plus RBAC.  If you want to verify any component of `PEER`, change the policy to change the service account that is the target service authorization policy accepts and reapply the config.  
+
+Change either the settings `RequestAuthentication` _or_  `AuthorizationPolicy` depending on which layer you are testing
 
 ```yaml
+## svc --> be-v1
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+ name: svc-be-v1-request-authn-policy
+ namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: be
+      version: v1
+  jwtRules:
+  - issuer: "$SERVICE_ACCOUNT_EMAIL"
+    audiences:
+    - "http://be.default.svc.cluster.local:8080/"      ##  or CHANGE ORIGIN  <<<<  "Audiences in Jwt are not allowed"
+    jwksUri: "https://www.googleapis.com/service_accounts/v1/jwk/$SERVICE_ACCOUNT_EMAIL"  
+    # forwardOriginalToken: true
+    outputPayloadToHeader: x-jwt-payload   
+---
+## svc --> be-v2
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+ name: svc-be-v2-request-authn-policy
+ namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: be
+      version: v2
+  jwtRules:
+  - issuer: "$SERVICE_ACCOUNT_EMAIL"
+    audiences:
+    - "http://be.default.svc.cluster.local:8080/"   ##  or CHANGE ORIGIN  <<<<  "Audiences in Jwt are not allowed"
+    jwksUri: "https://www.googleapis.com/service_accounts/v1/jwk/$SERVICE_ACCOUNT_EMAIL" 
+    # forwardOriginalToken: true
+    outputPayloadToHeader: x-jwt-payload
+---
 apiVersion: security.istio.io/v1beta1
 kind: AuthorizationPolicy
 metadata:
@@ -656,13 +696,13 @@ spec:
  rules:
  - from:
    - source:
-       principals: ["cluster.local/ns/default/sa/fooooo-sa"]    #  CHANGE  PEER
+       principals: ["cluster.local/ns/default/sa/svc1-sa"]    #  CHANGE  PEER  <<<<  "RBAC: access denied"
    to:
    - operation:
        methods: ["GET"]
    when:
    - key: request.auth.claims[iss]
-     values: ["$SERVICE_ACCOUNT_EMAIL"]        ##  or CHANGE ORIGIN
+     values: ["$SERVICE_ACCOUNT_EMAIL"]        ##  or CHANGE ORIGIN at Authz <<<<  "RBAC: access denied"
    - key: request.auth.claims[aud]
      values: ["http://be.default.svc.cluster.local:8080/"]          
 ---
@@ -680,13 +720,13 @@ spec:
  rules:
  - from:
    - source:
-       principals: ["cluster.local/ns/default/sa/fooooo-sa"]   # CHANGE PEER
+       principals: ["cluster.local/ns/default/sa/svc1-sa"]   # CHANGE PEER <<<<  "RBAC: access denied"
    to:
    - operation:
        methods: ["GET"]
    when:
    - key: request.auth.claims[iss]
-     values: ["$SERVICE_ACCOUNT_EMAIL"]        ##  or CHANGE ORIGIN
+     values: ["$SERVICE_ACCOUNT_EMAIL"]        ##  or CHANGE ORIGIN at Authz <<<<  "RBAC: access denied"
    - key: request.auth.claims[aud]
      values: ["http://be.default.svc.cluster.local:8080/"]            
 ```

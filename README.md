@@ -472,8 +472,9 @@ spec:
 
 The `RequestAuthentication` accepts a JWT token signed by the external authz server and must also include the audience of the backend (which alice's token has).  The second authorization (redundantly) rule further parses out the token and looks for the same.
 
-Istio does not automatically forward the inboud token (though it maybe possble with `SIDECAR_INBOUND`->`SIDECAR_OUTBOUND` forwarding somehow...)...to achieve this requres some application code changes.  The folloing snippet is the code within `frontend/app.js` which take the token and uses it on the backend api call. 
+Istio does not automatically forward the inbound token (though it maybe possible with `SIDECAR_INBOUND`->`SIDECAR_OUTBOUND` forwarding somehow...)...to achieve this requres some application code changes.  The folloing snippet is the code within `frontend/app.js` which take the token and uses it on the backend api call. 
 
+>> `4/27/20`: update on the comment "(though it maybe possble with `SIDECAR_INBOUND`->`SIDECAR_OUTBOUND` forwarding somehow...)"   Its not; envoy doens't carry state from the filters forward like this.  You need to either accept and forward the header in code as shown below:
 
 ```javascript
 var resp_promises = []
@@ -495,6 +496,40 @@ urls.forEach(element => {
      resp_promises.push( getURL(element,out_headers) )
 });
 ```
+
+Or configure istio to make an `OUTBOUND` ext_authz filter call.  The external authz filter will return a new Authorization server token intended for ust `svcb`.
+
+You will also need to set [allowed_client_headers](https://www.envoyproxy.io/docs/envoy/latest/api-v2/config/filter/http/ext_authz/v2/ext_authz.proto#envoy-api-msg-config-filter-http-ext-authz-v2-authorizationresponse) so that the auth token returned by ext-authz server is sent to the upstream (in this case, upstream is `svcb`)
+
+I think the config would be _something_ like this:
+
+```yaml
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: ext-authz-service
+  namespace: default
+spec:
+  workloadLabels:
+    app: svc1
+  filters:
+  - listenerMatch:
+      listenerType: OUTBOUND    #  <<<<  OUTBOUND svc1->*  
+      listenerProtocol: HTTP 
+    insertPosition:
+      index: FIRST           
+    filterName: envoy.ext_authz
+    filterType: HTTP
+    filterConfig:
+      grpc_service:
+        envoy_grpc:
+          cluster_name: patched.authz.authz-ns.svc.cluster.local      
+          authorization_response:
+            allowed_client_headers:
+              patterns:
+                - exact: "Authorization"
+```
+(ofcourse changes are needed to ext-authz server as provided in this repo..)
 
 >> Note: i added both ORIGIN and PEER just to demonstrate this...Until its easier forward the token by envoy/istio, i woudn't recommend doing  this bit..
 

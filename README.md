@@ -799,20 +799,27 @@ metadata:
   name: svc1-authz-filter
   namespace: default
 spec:
-  workloadLabels:
-    app: svc1
-  filters:
-  - listenerMatch:
-      listenerType: SIDECAR_INBOUND
-      listenerProtocol: HTTP 
-    insertPosition:
-      index: FIRST           
-    filterName: envoy.ext_authz
-    filterType: HTTP
-    filterConfig:
-      grpc_service:
-        envoy_grpc:
-          cluster_name: patched.authz.authz-ns.svc.cluster.local  
+  workloadSelector:
+    labels:
+      app: svc1
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: SIDECAR_INBOUND
+        listener:
+          filterChain:
+            filter:
+              name: "envoy.http_connection_manager"
+              subFilter:
+                name: "envoy.router"
+      patch:
+        operation: INSERT_FIRST
+        value:
+         name: envoy.ext_authz
+         config:
+           grpc_service:
+             envoy_grpc:
+               cluster_name: patched.authz.authz-ns.svc.cluster.local
 ```
 
 If you do this, you will have to setup PEER policies that allow the service to connect and use the authorization server.

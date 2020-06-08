@@ -11,20 +11,27 @@ metadata:
   name: ext-authz-filter
   namespace: istio-system
 spec:
-  workloadLabels:
-    app: istio-ingressgateway
-  filters:
-  - listenerMatch:
-      listenerType: GATEWAY
-      listenerProtocol: HTTP 
-    insertPosition:
-      index: FIRST           
-    filterName: envoy.ext_authz
-    filterType: HTTP
-    filterConfig:
-      grpc_service:
-        envoy_grpc:
-          cluster_name: patched.authz.authz-ns.svc.cluster.local        
+  workloadSelector:
+    labels:
+      app: istio-ingressgateway
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: "envoy.http_connection_manager"
+              subFilter:
+                name: "envoy.router"
+      patch:
+        operation: INSERT_BEFORE
+        value:
+         name: envoy.ext_authz
+         config:
+           grpc_service:
+             envoy_grpc:
+               cluster_name: patched.authz.authz-ns.svc.cluster.local
 ---
 # https://github.com/istio/istio/issues/21841
 apiVersion: networking.istio.io/v1alpha3

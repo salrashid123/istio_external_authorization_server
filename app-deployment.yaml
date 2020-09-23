@@ -61,11 +61,14 @@ data:
   forward_auth_header: "true"
   backend_namespace: default
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: svc1
 spec:
+  selector:
+    matchLabels:
+      app: svc1
   replicas: 1
   template:
     metadata:
@@ -91,11 +94,14 @@ spec:
               name: svc-config
               key: backend_namespace
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: svc2
 spec:
+  selector:
+    matchLabels:
+      app: svc2 
   replicas: 1
   template:
     metadata:
@@ -121,7 +127,7 @@ spec:
               name: svc-config
               key: backend_namespace
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: be-v1
@@ -129,6 +135,10 @@ metadata:
     type: be
     version: v1
 spec:
+  selector:
+    matchLabels:
+      app: be
+      version: v1
   replicas: 1
   template:
     metadata:
@@ -153,7 +163,7 @@ spec:
             fieldRef:
               fieldPath: metadata.name
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: be-v2
@@ -161,6 +171,10 @@ metadata:
     type: be
     version: v2
 spec:
+  selector:
+    matchLabels:
+      app: be
+      version: v2  
   replicas: 1
   template:
     metadata:

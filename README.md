@@ -86,7 +86,8 @@ The images we will use here has the following endpoints enabled:
 
 To build your own, create a public dockerhub images with the names specified below:
 
-- Build External Aututhorization Server
+- Build External Aututhorization Server (you can ofcourse use your own dockerhub repo!)
+
 ```bash
 cd authz_server/
 docker build -t salrashid123/ext-authz-server .
@@ -113,10 +114,11 @@ docker push salrashid123/besvc:2
 
 ### Create Cluster and install Istio
 
-Create a GKE cluster (do not enable the istio addon GKE provides; we will install istio 1.5 manually)
+Create a `1.18+` GKE cluster (do not enable the istio addon GKE provides; we will install istio `1.7.2` manually)
 
 ```bash
-gcloud container  clusters create istio-1 --machine-type "n1-standard-2" --zone us-central1-a  --num-nodes 4 --enable-ip-alias
+gcloud container  clusters create istio-1 --machine-type "n1-standard-2" --zone us-central1-a  --num-nodes 4 \
+   --enable-ip-alias --cluster-version "1.18" -q
 
 gcloud container clusters get-credentials istio-1 --zone us-central1-a
 
@@ -125,31 +127,22 @@ kubectl create clusterrolebinding cluster-admin-binding --clusterrole=cluster-ad
 kubectl create ns istio-system
 ```
 
-### Download and install istio 1.5+
+### Download and install istio 1.7.2
 
 ```bash
-export ISTIO_VERSION=1.5.0
+export ISTIO_VERSION=1.7.2
 
- wget https://github.com/istio/istio/releases/download/$ISTIO_VERSION/istio-$ISTIO_VERSION-linux.tar.gz 
- tar xvf istio-$ISTIO_VERSION-linux.tar.gz 
- rm istio-$ISTIO_VERSION-linux.tar.gz 
+wget https://github.com/istio/istio/releases/download/$ISTIO_VERSION/istio-$ISTIO_VERSION-linux-amd64.tar.gz
+tar xvf istio-$ISTIO_VERSION-linux-amd64.tar.gz
+rm istio-$ISTIO_VERSION-linux-amd64.tar.gz
 
- wget https://github.com/istio/istio/releases/download/$ISTIO_VERSION/istioctl-$ISTIO_VERSION-linux.tar.gz
-  tar xvf istioctl-$ISTIO_VERSION-linux.tar.gz
- rm istioctl-$ISTIO_VERSION-linux.tar.gz
+export PATH=`pwd`/istio-$ISTIO_VERSION/bin:$PATH
 
- wget https://storage.googleapis.com/kubernetes-helm/helm-v2.11.0-linux-amd64.tar.gz
- tar xf helm-v2.11.0-linux-amd64.tar.gz
- rm helm-v2.11.0-linux-amd64.tar.gz
-
- export PATH=`pwd`:`pwd`/linux-amd64/:$PATH
-
-cd istio-$ISTIO_VERSION
-
-istioctl manifest apply --set profile=demo \
-   --set values.global.controlPlaneSecurityEnabled=true \
-   --set values.global.mtls.enabled=true  \
-   --set values.sidecarInjectorWebhook.enabled=true
+istioctl install --set profile=demo \
+ --set values.global.controlPlaneSecurityEnabled=true  \
+ --set meshConfig.enableAutoMtls=true  \
+ --set values.gateways.istio-ingressgateway.runAsRoot=true \
+ --set meshConfig.outboundTrafficPolicy.mode=REGISTRY_ONLY 
 
 kubectl label namespace default istio-injection=enabled
 ```
@@ -171,26 +164,26 @@ echo $GATEWAY_IP
 Deploy the baseline application without the external authorization server
 
 ```bash
-kubectl apply -f app-deployment.yaml
+$ kubectl apply -f app-deployment.yaml
 
 $ kubectl get po,svc
 NAME                         READY   STATUS    RESTARTS   AGE
-pod/be-v1-84c45dcd84-2rwwm   2/2     Running   0          14s
-pod/be-v2-64d9cf5fb4-p4c6b   2/2     Running   0          14s
-pod/svc1-7fb765b454-kmsmw    2/2     Running   0          15s
-pod/svc2-bbdbf49f4-r9fc2     2/2     Running   0          15s
+pod/be-v1-6d55cbb9b9-dfnh9   2/2     Running   0          53s
+pod/be-v2-5977896d79-rl8h9   2/2     Running   0          53s
+pod/svc1-55d9cc85cb-v282q    2/2     Running   0          53s
+pod/svc2-75469b454-vfn7r     2/2     Running   0          53s
 
-NAME                 TYPE        CLUSTER-IP    EXTERNAL-IP   PORT(S)    AGE
-service/be           ClusterIP   10.0.17.193   <none>        8080/TCP   15s
-service/kubernetes   ClusterIP   10.0.16.1     <none>        443/TCP    20h
-service/svc1         ClusterIP   10.0.22.126   <none>        8080/TCP   15s
-service/svc2         ClusterIP   10.0.29.28    <none>        8080/TCP   15s
+NAME                 TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)    AGE
+service/be           ClusterIP   10.4.2.159   <none>        8080/TCP   54s
+service/kubernetes   ClusterIP   10.4.0.1     <none>        443/TCP    6m24s
+service/svc1         ClusterIP   10.4.6.40    <none>        8080/TCP   54s
+service/svc2         ClusterIP   10.4.4.36    <none>        8080/TCP   54s
 ```
 
 ### Deploy Istio Gateway and services
 
 ```bash
-kubectl apply -f istio-lb-certs.yaml
+$ kubectl apply -f istio-lb-certs.yaml
 sleep 10
 # regenerate the ingress-gateway to pickup the certs
 INGRESS_POD_NAME=$(kubectl get po -n istio-system | grep ingressgateway\- | awk '{print$1}'); echo ${INGRESS_POD_NAME};
@@ -222,6 +215,11 @@ If you would rather run this in a loop:
 ##### Kiali Dashboard
 
 If you want, launch the kiali dashboard (default password is `admin/admin`).  In a new window, run:
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.7/samples/addons/prometheus.yaml
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.7/samples/addons/kiali.yaml
+```
 
 ```
 istioctl dashboard kiali
@@ -308,7 +306,7 @@ The net effect of that is `alice` can view `svc1`, `bob` can view `svc2` using `
 As Alice:
 
 ```bash
-USER=alice
+export USER=alice
 
 curl -s \
   --cacert certs/CA_crt.pem  --resolve svc1.example.com:443:$GATEWAY_IP \
@@ -332,7 +330,7 @@ curl -s \
 As Bob:
 
 ```bash
-USER=bob
+export USER=bob
 
 curl -s \
   --cacert certs/CA_crt.pem  --resolve svc1.example.com:443:$GATEWAY_IP \
@@ -356,7 +354,7 @@ curl -s \
 As Carol
 
 ```bash
-USER=carol
+export USER=carol
 
 curl -s \
   --cacert certs/CA_crt.pem  --resolve svc1.example.com:443:$GATEWAY_IP \
@@ -537,7 +535,7 @@ spec:
 Anwyay, to test all this out
 
 ```bash
-USER=alice
+export USER=alice
 
 curl -s \
   --cacert certs/CA_crt.pem  --resolve svc1.example.com:443:$GATEWAY_IP \
@@ -546,7 +544,7 @@ curl -s \
    https://svc1.example.com/backend | jq '.'
 
 
-USER=bob
+export USER=bob
 
 curl -s \
   --cacert certs/CA_crt.pem  --resolve svc2.example.com:443:$GATEWAY_IP \
@@ -554,7 +552,7 @@ curl -s \
   -w " %{http_code}\n"  \
    https://svc2.example.com/backend | jq '.'
 
-USER=carol
+export USER=carol
 
 curl -s \
   --cacert certs/CA_crt.pem  --resolve svc1.example.com:443:$GATEWAY_IP \
@@ -576,7 +574,7 @@ aud = []string{"http://svc1.default.svc.cluster.local:8080/", "http://be.default
 Which is allowed by backend services `RequestAuthentication` policy.
 
 ```bash
-USER=alice
+export USER=alice
 curl -s \
   --cacert certs/CA_crt.pem  --resolve svc1.example.com:443:$GATEWAY_IP \
   -H "Authorization: Bearer $USER" \
@@ -609,7 +607,7 @@ Which means the `RequestAuthentication` will fail.  Bob is only allowed to invok
 
 
 ```bash
-USER=bob
+export USER=bob
 curl -s \
   --cacert certs/CA_crt.pem  --resolve svc2.example.com:443:$GATEWAY_IP \
   -H "Authorization: Bearer $USER" \
@@ -639,7 +637,7 @@ aud = []string{"http://svc1.default.svc.cluster.local:8080/"}
 ```
 
 ```bash
-USER=carol
+export USER=carol
 curl -s \
   --cacert certs/CA_crt.pem  --resolve svc1.example.com:443:$GATEWAY_IP \
   -H "Authorization: Bearer $USER" \
@@ -768,7 +766,7 @@ spec:
 then reapply the config and access the backend as `alice`
 
 ```bash
-USER=alice
+export USER=alice
 curl -s \
   --cacert certs/CA_crt.pem  --resolve svc1.example.com:443:$GATEWAY_IP \
   -H "Authorization: Bearer $USER" \

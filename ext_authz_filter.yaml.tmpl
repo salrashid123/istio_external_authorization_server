@@ -17,6 +17,8 @@ spec:
   configPatches:
     - applyTo: HTTP_FILTER
       match:
+        proxy:
+          proxyVersion: ^1\.7.*      
         context: GATEWAY
         listener:
           filterChain:
@@ -27,8 +29,9 @@ spec:
       patch:
         operation: INSERT_BEFORE
         value:
-         name: envoy.ext_authz
-         config:
+         name: envoy.filters.http.ext_authz
+         typed_config:
+           "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
            grpc_service:
              envoy_grpc:
                cluster_name: patched.authz.authz-ns.svc.cluster.local
@@ -40,11 +43,14 @@ metadata:
   name: ext-authz-filter-cluster-patch
   namespace: istio-system
 spec:
-  workloadLabels:
-    app: istio-ingressgateway
+  workloadSelector:
+    labels:
+      app: istio-ingressgateway
   configPatches:
   - applyTo: CLUSTER
     match:
+      proxy:
+        proxyVersion: ^1\.7.*    
       cluster:
         service: authz.authz-ns.svc.cluster.local
     patch:
@@ -52,12 +58,15 @@ spec:
       value:
         name: "patched.authz.authz-ns.svc.cluster.local"
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: authz
   namespace: authz-ns
 spec:
+  selector:
+    matchLabels:
+      app: authz
   replicas: 1
   template:
     metadata:

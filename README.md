@@ -332,6 +332,43 @@ curl -s \
 >>> Audiences in Jwt are not allowed 403
 ```
 
+If you want to view the authz logs
+
+```bash
+AUTHZ_POD_NAME=$(kubectl get po -n authz-ns | grep authz\- | awk '{print$1}'); echo ${AUTHZ_POD_NAME};
+
+kubectl logs -n authz-ns $AUTHZ_POD_NAME -c authz-container
+```
+You should see some debug logs as well as the actual reissued JWT header
+
+```log
+2021/01/14 16:56:03 >>> Authorization called check()
+2021/01/14 16:56:03 Authorization Header Bearer alice
+2021/01/14 16:56:03 Using Claim %v {alice [http://svc1.default.svc.cluster.local:8080/ http://be.default.svc.cluster.local:8080/] { 1610643423  1610643363 ext-authz-server@mineral-minutia-820.iam.gserviceaccount.com 0 ext-authz-server@mineral-minutia-820.iam.gserviceaccount.com}}
+2021/01/14 16:56:03 Issuing outbound Header eyJhbGciOiJSUzI1NiIsImtpZCI6Ijg3MDRjMTk3NDA1NDRhOWU1ZTNlY2VkODI1MTNlZjJmYzQ0NzczMzAiLCJ0eXAiOiJKV1QifQ.eyJ1aWQiOiJhbGljZSIsImF1ZCI6WyJodHRwOi8vc3ZjMS5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsOjgwODAvIiwiaHR0cDovL2JlLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWw6ODA4MC8iXSwiZXhwIjoxNjEwNjQzNDIzLCJpYXQiOjE2MTA2NDMzNjMsImlzcyI6ImV4dC1hdXRoei1zZXJ2ZXJAbWluZXJhbC1taW51dGlhLTgyMC5pYW0uZ3NlcnZpY2VhY2NvdW50LmNvbSIsInN1YiI6ImV4dC1hdXRoei1zZXJ2ZXJAbWluZXJhbC1taW51dGlhLTgyMC5pYW0uZ3NlcnZpY2VhY2NvdW50LmNvbSJ9.ehIywY4h7Yye_vEHEc-zGnftq42Vr3LzuOVlvCv6H2qYMhLE9aQtDO3AOQNwEwll3lOqI3H04pGmcAu7P_vGgjIUzYV_LkZf2Rpgymh_m4voJPpybhHx9Ntnj5myHsXmAb0LiRmLGc2zgw7pA85Ojc1D5AMZS4sp_WcM-E9vZUwEoT4CbutjfhOxbjJrSyju9vdF-ZLcLdzwqTGac-L-rkv2FFd8ZnUJFsGSUBtSh--Yrcim9C-8CXgHE_DHsrnB1-OnmndOBmEpLaHFVcF9fM9PqjGSdTsazblgrT-jRpM2CsnzFZ-qmP74HB6QkhhyP-pw-j8CYwx4wnn5FQ0HwQ
+
+2021/01/14 16:56:03 >>> Authorization called check()
+2021/01/14 16:56:03 Authorization Header Bearer alice
+2021/01/14 16:56:03 Using Claim %v {alice [http://svc1.default.svc.cluster.local:8080/ http://be.default.svc.cluster.local:8080/] { 1610643423  1610643363 ext-authz-server@mineral-minutia-820.iam.gserviceaccount.com 0 ext-authz-server@mineral-minutia-820.iam.gserviceaccount.com}}
+2021/01/14 16:56:03 Issuing outbound Header eyJhbGciOiJSUzI1NiIsImtpZCI6Ijg3MDRjMTk3NDA1NDRhOWU1ZTNlY2VkODI1MTNlZjJmYzQ0NzczMzAiLCJ0eXAiOiJKV1QifQ.eyJ1aWQiOiJhbGljZSIsImF1ZCI6WyJodHRwOi8vc3ZjMS5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsOjgwODAvIiwiaHR0cDovL2JlLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWw6ODA4MC8iXSwiZXhwIjoxNjEwNjQzNDIzLCJpYXQiOjE2MTA2NDMzNjMsImlzcyI6ImV4dC1hdXRoei1zZXJ2ZXJAbWluZXJhbC1taW51dGlhLTgyMC5pYW0uZ3NlcnZpY2VhY2NvdW50LmNvbSIsInN1YiI6ImV4dC1hdXRoei1zZXJ2ZXJAbWluZXJhbC1taW51dGlhLTgyMC5pYW0uZ3NlcnZpY2VhY2NvdW50LmNvbSJ9.ehIywY4h7Yye_vEHEc-zGnftq42Vr3LzuOVlvCv6H2qYMhLE9aQtDO3AOQNwEwll3lOqI3H04pGmcAu7P_vGgjIUzYV_LkZf2Rpgymh_m4voJPpybhHx9Ntnj5myHsXmAb0LiRmLGc2zgw7pA85Ojc1D5AMZS4sp_WcM-E9vZUwEoT4CbutjfhOxbjJrSyju9vdF-ZLcLdzwqTGac-L-rkv2FFd8ZnUJFsGSUBtSh--Yrcim9C-8CXgHE_DHsrnB1-OnmndOBmEpLaHFVcF9fM9PqjGSdTsazblgrT-jRpM2CsnzFZ-qmP74HB6QkhhyP-pw-j8CYwx4wnn5FQ0HwQ
+```
+
+note JWT headers include cliams and audiences
+
+```json
+{
+  "uid": "alice",
+  "aud": [
+    "http://svc1.default.svc.cluster.local:8080/",
+    "http://be.default.svc.cluster.local:8080/"
+  ],
+  "exp": 1610643423,
+  "iat": 1610643363,
+  "iss": "ext-authz-server@mineral-minutia-820.iam.gserviceaccount.com",
+  "sub": "ext-authz-server@mineral-minutia-820.iam.gserviceaccount.com"
+}
+```
+
 As Bob:
 
 ```bash
@@ -812,13 +849,13 @@ spec:
         listener:
           filterChain:
             filter:
-              name: "envoy.http_connection_manager"
+              name: "envoy.filters.network.http_connection_manager"
               subFilter:
-                name: "envoy.router"
+                name: "envoy.filters.http.router"
       patch:
         operation: INSERT_FIRST
         value:
-         name: envoy.ext_authz
+         name: "envoy.filters.http.ext_authz"
          config:
            grpc_service:
              envoy_grpc:

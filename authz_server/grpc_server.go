@@ -64,7 +64,8 @@ const (
 )
 
 type MyCustomClaims struct {
-	Uid string `json:"uid"`
+	Uid string   `json:"uid"`
+	Aud []string `json:"aud"` // https://github.com/dgrijalva/jwt-go/pull/308
 	jwt.StandardClaims
 }
 
@@ -135,26 +136,28 @@ func (a *AuthorizationServer) Check(ctx context.Context, req *auth.CheckRequest)
 
 		if stringInSlice(token, strings.Split(AUTHZ_ALLOWED_USERS, ",")) {
 
-			var aud string
+			var aud []string
 			if token == "alice" {
-				aud = "http://svc1.default.svc.cluster.local:8080/"
+				aud = []string{"http://svc1.default.svc.cluster.local:8080/", "http://be.default.svc.cluster.local:8080/"}
 			} else if token == "bob" {
-				aud = "http://svc2.default.svc.cluster.local:8080/"
+				aud = []string{"http://svc2.default.svc.cluster.local:8080/"}
 			} else if token == "carol" {
-				aud = "http://svc1.default.svc.cluster.local:8080/"
+				aud = []string{"http://svc1.default.svc.cluster.local:8080/"}
 			} else {
-				aud = ""
+				aud = []string{}
 			}
 			claims := MyCustomClaims{
 				token,
+				aud,
 				jwt.StandardClaims{
-					Issuer:    AUTHZ_ISSUER,
-					Subject:   AUTHZ_ISSUER,
-					Audience:  aud,
+					Issuer:  AUTHZ_ISSUER,
+					Subject: AUTHZ_ISSUER,
+					//Audience:  aud,
 					IssuedAt:  time.Now().Unix(),
 					ExpiresAt: time.Now().Add(time.Minute * 1).Unix(),
 				},
 			}
+
 			log.Println("Using Claim %v", claims)
 			token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 			token.Header["kid"] = AUTHZ_SERVER_KEY_ID

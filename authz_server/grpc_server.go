@@ -64,8 +64,7 @@ const (
 )
 
 type MyCustomClaims struct {
-	Uid string   `json:"uid"`
-	Aud []string `json:"aud"` // https://github.com/dgrijalva/jwt-go/pull/308
+	Uid string `json:"uid"`
 	jwt.StandardClaims
 }
 
@@ -128,6 +127,7 @@ func (a *AuthorizationServer) Check(ctx context.Context, req *auth.CheckRequest)
 	if ok {
 		splitToken = strings.Split(authHeader, "Bearer ")
 	} else {
+		log.Println("Unable to parse Header")
 		return returnUnAuthenticated("Unable to parse Authorization Header"), nil
 	}
 	if len(splitToken) == 2 {
@@ -135,28 +135,27 @@ func (a *AuthorizationServer) Check(ctx context.Context, req *auth.CheckRequest)
 
 		if stringInSlice(token, strings.Split(AUTHZ_ALLOWED_USERS, ",")) {
 
-			var aud []string
+			var aud string
 			if token == "alice" {
-				aud = []string{"http://svc1.default.svc.cluster.local:8080/", "http://be.default.svc.cluster.local:8080/"}
+				aud = "http://svc1.default.svc.cluster.local:8080/"
 			} else if token == "bob" {
-				aud = []string{"http://svc2.default.svc.cluster.local:8080/"}
+				aud = "http://svc2.default.svc.cluster.local:8080/"
 			} else if token == "carol" {
-				aud = []string{"http://svc1.default.svc.cluster.local:8080/"}
+				aud = "http://svc1.default.svc.cluster.local:8080/"
 			} else {
-				aud = []string{}
+				aud = ""
 			}
 			claims := MyCustomClaims{
 				token,
-				aud,
 				jwt.StandardClaims{
-					Issuer:  AUTHZ_ISSUER,
-					Subject: AUTHZ_ISSUER,
-					//Audience:  aud,
+					Issuer:    AUTHZ_ISSUER,
+					Subject:   AUTHZ_ISSUER,
+					Audience:  aud,
 					IssuedAt:  time.Now().Unix(),
 					ExpiresAt: time.Now().Add(time.Minute * 1).Unix(),
 				},
 			}
-
+			log.Println("Using Claim %v", claims)
 			token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 			token.Header["kid"] = AUTHZ_SERVER_KEY_ID
 			ss, err := token.SignedString(privateKey)
@@ -184,6 +183,7 @@ func (a *AuthorizationServer) Check(ctx context.Context, req *auth.CheckRequest)
 				},
 			}, nil
 		} else {
+			log.Printf("Authorization Header missing")
 			return returnPermissionDenied("Permission Denied"), nil
 
 		}

@@ -13,23 +13,23 @@ metadata:
 spec:
   workloadSelector:
     labels:
-      app: istio-ingressgateway
+      istio: ingressgateway
   configPatches:
     - applyTo: HTTP_FILTER
       match:
-        proxy:
-          proxyVersion: ^1\.7.*      
         context: GATEWAY
+        proxy:
+          proxyVersion: ^1\.8.*        
         listener:
           filterChain:
             filter:
-              name: "envoy.http_connection_manager"
+              name: "envoy.filters.network.http_connection_manager"
               subFilter:
-                name: "envoy.router"
+                name: "envoy.filters.http.router"
       patch:
         operation: INSERT_BEFORE
         value:
-         name: envoy.filters.http.ext_authz
+         name: "envoy.filters.http.ext_authz"
          typed_config:
            "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
            grpc_service:
@@ -45,12 +45,12 @@ metadata:
 spec:
   workloadSelector:
     labels:
-      app: istio-ingressgateway
+      istio: ingressgateway
   configPatches:
   - applyTo: CLUSTER
     match:
       proxy:
-        proxyVersion: ^1\.7.*    
+        proxyVersion: ^1\.8.*       
       cluster:
         service: authz.authz-ns.svc.cluster.local
     patch:
@@ -76,7 +76,7 @@ spec:
       serviceAccountName: authz-sa
       containers:
       - name: authz-container
-        image: salrashid123/ext-authz-server-test
+        image: salrashid123/ext-authz-server
         volumeMounts:
         - name: keyfile
           mountPath: "/data/certs"
@@ -85,7 +85,7 @@ spec:
         ports:
         - containerPort: 50051
         env:
-        - name: ALLOWED_USERS
+        - name: AUTHZ_ALLOWED_USERS
           valueFrom:
             configMapKeyRef:
               name: authz-config
@@ -160,8 +160,7 @@ spec:
     - destination:
         host: authz   
     match:
-    - sourceLabels:
-        app: istio-ingressgateway               
+    - sourceLabels:           
         istio: ingressgateway
 ---
 apiVersion: networking.istio.io/v1alpha3

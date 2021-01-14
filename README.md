@@ -36,6 +36,11 @@ export PROJECT_NUMBER=`gcloud projects describe $PROJECT_ID --format="value(proj
 export SA_NAME=ext-authz-server
 
 export SERVICE_ACCOUNT_EMAIL=$SA_NAME@$PROJECT_ID.iam.gserviceaccount.com
+
+echo $PROJECT_ID
+echo $PROJECT_NUMBER
+echo $SA_NAME
+echo $SERVICE_ACCOUNT_EMAIL
 ```
 
 #### Create Service Account for the Authorization Server
@@ -51,6 +56,7 @@ The output should show the keyID (note this down)
 
 ```bash
 export KEY_ID=`gcloud iam service-accounts keys  list --iam-account=$SERVICE_ACCOUNT_EMAIL --format="value(name)" --filter=keyType=USER_MANAGED`
+echo $KEY_ID
 ```
 
 Convert the key to PEM, remove the passphrase and then to base64
@@ -94,7 +100,7 @@ docker build -t salrashid123/ext-authz-server .
 docker push salrashid123/ext-authz-server
 ```
 - Build Frontend
-```
+```bash
 cd frontend 
 docker build  --build-arg VER=1 -t salrashid123/svc:1 .
 docker build  --build-arg VER=2 -t salrashid123/svc:2 .
@@ -103,7 +109,7 @@ docker push salrashid123/svc:2
 ```
 
 - Build Backend
-```
+```bash
 cd backend
 docker build  --build-arg VER=1 -t salrashid123/besvc:1 .
 docker build  --build-arg VER=1 -t salrashid123/besvc:2 .
@@ -114,11 +120,11 @@ docker push salrashid123/besvc:2
 
 ### Create Cluster and install Istio
 
-Create a `1.18+` GKE cluster (do not enable the istio addon GKE provides; we will install istio `1.7.2` manually)
+Create a `1.19+` GKE cluster (do not enable the istio addon GKE provides; we will install istio `1.7.2` manually)
 
 ```bash
 gcloud container  clusters create istio-1 --machine-type "n1-standard-2" --zone us-central1-a  --num-nodes 4 \
-   --enable-ip-alias --cluster-version "1.18" -q
+   --enable-ip-alias --cluster-version "1.19" -q
 
 gcloud container clusters get-credentials istio-1 --zone us-central1-a
 
@@ -127,19 +133,18 @@ kubectl create clusterrolebinding cluster-admin-binding --clusterrole=cluster-ad
 kubectl create ns istio-system
 ```
 
-### Download and install istio 1.7.2
+### Download and install istio 1.8.1
 
 ```bash
-export ISTIO_VERSION=1.7.2
+export ISTIO_VERSION=1.8.1
 
-wget https://github.com/istio/istio/releases/download/$ISTIO_VERSION/istio-$ISTIO_VERSION-linux-amd64.tar.gz
-tar xvf istio-$ISTIO_VERSION-linux-amd64.tar.gz
-rm istio-$ISTIO_VERSION-linux-amd64.tar.gz
+wget -P /tmp/ https://github.com/istio/istio/releases/download/$ISTIO_VERSION/istio-$ISTIO_VERSION-linux-amd64.tar.gz
+tar xvf /tmp/istio-$ISTIO_VERSION-linux-amd64.tar.gz -C /tmp/
+rm /tmp/istio-$ISTIO_VERSION-linux-amd64.tar.gz
 
-export PATH=`pwd`/istio-$ISTIO_VERSION/bin:$PATH
+export PATH=/tmp/istio-$ISTIO_VERSION/bin:$PATH
 
 istioctl install --set profile=demo \
- --set values.global.controlPlaneSecurityEnabled=true  \
  --set meshConfig.enableAutoMtls=true  \
  --set values.gateways.istio-ingressgateway.runAsRoot=true \
  --set meshConfig.outboundTrafficPolicy.mode=REGISTRY_ONLY 
@@ -217,8 +222,8 @@ If you would rather run this in a loop:
 If you want, launch the kiali dashboard (default password is `admin/admin`).  In a new window, run:
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.7/samples/addons/prometheus.yaml
-kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.7/samples/addons/kiali.yaml
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.8/samples/addons/prometheus.yaml
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.8/samples/addons/kiali.yaml
 ```
 
 ```
@@ -897,3 +902,9 @@ If you want to use OIDC JWT authentication at the ingress gateway and then have 
 external authz service, apply the `RequestAuthentication` policies on the ingress gateway  as shown in the equivalent
 Envoy configuration [here](https://github.com/salrashid123/envoy_iap/blob/master/envoy_google.yaml#L32).
 You can generate an `id-token` using the script found under `jwt_client/` folder.
+
+### Debugging
+
+```
+kubectl get pods -n istio-system -o name -l istio=ingressgateway | sed 's|pod/||' | while read -r pod; do istioctl proxy-config log "$pod" -n istio-system --level rbac:debug; done
+```

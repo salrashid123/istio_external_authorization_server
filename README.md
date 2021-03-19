@@ -13,16 +13,19 @@ To that end, this configuration sets up `mTLS`, `RBAC` and `ORIGIN` authenticati
 
 This tutorial is a continuation of the [istio helloworld](https://github.com/salrashid123/istio_helloworld) application.
 
+>> `3/20/21`: Updated for [istio 1.9: Integrate external authorization system (e.g. OPA, oauth2-proxy, etc.) with Istio using AuthorizationPolicy](https://istio.io/latest/blog/2021/better-external-authz/).   Part of the upgrade is to use the `v3` API (`go-control-plane/envoy/config/core/v3`, `go-control-plane/envoy/service/auth/v3`)
+
 ### References
 
 - [Envoy External Authorization](https://www.envoyproxy.io/docs/envoy/latest/api-v2/config/filter/http/ext_authz/v2/ext_authz.proto)
   - [Envoy External Authorization server (envoy.ext_authz) HelloWorld](https://github.com/salrashid123/envoy_external_authz)
 - [Istio Security](https://istio.io/docs/concepts/security/)
+- [External authorization with custom action](https://istio.io/latest/docs/tasks/security/authorization/authz-custom/)
 
 
 ### Setup
 
-The following setup uses a Google Cloud Platform GKE cluster and Service Accounts certificates to issue the custom JWT tokens by the authorization server.  We are using GCP service accounts for the authhorization server JWTs simply because each service account on GCP has a convenient public JWK url for validation.
+The following setup uses a Google Cloud Platform GKE cluster and Service Accounts certificates to issue the custom JWT tokens by the authorization server.  We are using GCP service accounts for the authorization server JWTs simply because each service account on GCP has a convenient public JWK url for validation.
 
 
 #### Set Environment Variables
@@ -64,6 +67,7 @@ Convert the key to PEM, remove the passphrase and then to base64
 ```bash
 openssl pkcs12 -in svc_account.p12  -nocerts -nodes -passin pass:notasecret | openssl rsa -out private.pem
 export SVC_ACCOUNT_KEY=`base64 -w 0 private.pem && echo`
+echo $SVC_ACCOUNT_KEY
 ```
 
 Note down the base64 encoded form of the key, we will need this and the KeyID later when defining the `ConfigMap` and `Secret` for the authorization server.
@@ -120,7 +124,7 @@ docker push salrashid123/besvc:2
 
 ### Create Cluster and install Istio
 
-Create a `1.19+` GKE cluster (do not enable the istio addon GKE provides; we will install istio `1.7.2` manually)
+Create a `1.19+` GKE cluster (do not enable the istio addon GKE provides; we will install istio `1.9.1` manually)
 
 ```bash
 gcloud container  clusters create istio-1 --machine-type "n1-standard-2" --zone us-central1-a  --num-nodes 4 \
@@ -133,14 +137,13 @@ kubectl create clusterrolebinding cluster-admin-binding --clusterrole=cluster-ad
 kubectl create ns istio-system
 ```
 
-### Download and install istio 1.8.1
+### Download and install istio 1.9.1
 
 ```bash
-export ISTIO_VERSION=1.8.1
+export ISTIO_VERSION=1.9.1
 
-wget -P /tmp/ https://github.com/istio/istio/releases/download/$ISTIO_VERSION/istio-$ISTIO_VERSION-linux-amd64.tar.gz
-tar xvf /tmp/istio-$ISTIO_VERSION-linux-amd64.tar.gz -C /tmp/
-rm /tmp/istio-$ISTIO_VERSION-linux-amd64.tar.gz
+wget -O /tmp/istio-$ISTIO_VERSION-linux-amd64.tar.gz https://github.com/istio/istio/releases/download/$ISTIO_VERSION/istio-$ISTIO_VERSION-linux-amd64.tar.gz
+tar xvf /tmp/istio-$ISTIO_VERSION-linux-amd64.tar.gz  -C /tmp/
 
 export PATH=/tmp/istio-$ISTIO_VERSION/bin:$PATH
 
@@ -163,6 +166,13 @@ export GATEWAY_IP=$(kubectl -n istio-system get service istio-ingressgateway -o 
 echo $GATEWAY_IP
 ```
 
+#### Debugging ingress-gateway
+
+```bash
+kubectl get pods -n istio-system -l app=istio-ingressgateway
+kubectl exec --namespace=istio-system istio-ingressgateway-5f8d978475-k24kz -c istio-proxy -- curl -X POST  http://localhost:15000/logging\?level\=debug
+kubectl logs istio-ingressgateway-5f8d978475-k24kz -n istio-system
+```
 
 ### Deploy application
 
@@ -173,16 +183,16 @@ $ kubectl apply -f app-deployment.yaml
 
 $ kubectl get po,svc
 NAME                         READY   STATUS    RESTARTS   AGE
-pod/be-v1-6d55cbb9b9-dfnh9   2/2     Running   0          53s
-pod/be-v2-5977896d79-rl8h9   2/2     Running   0          53s
-pod/svc1-55d9cc85cb-v282q    2/2     Running   0          53s
-pod/svc2-75469b454-vfn7r     2/2     Running   0          53s
+pod/be-v1-8589f84d6-ll82f    2/2     Running   0          74s
+pod/be-v2-6ff75fccd8-chj92   2/2     Running   0          74s
+pod/svc1-bdb4d7c59-fgfk5     2/2     Running   0          74s
+pod/svc2-7f65cc98f-hxcw9     2/2     Running   0          74s
 
-NAME                 TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)    AGE
-service/be           ClusterIP   10.4.2.159   <none>        8080/TCP   54s
-service/kubernetes   ClusterIP   10.4.0.1     <none>        443/TCP    6m24s
-service/svc1         ClusterIP   10.4.6.40    <none>        8080/TCP   54s
-service/svc2         ClusterIP   10.4.4.36    <none>        8080/TCP   54s
+NAME                 TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)    AGE
+service/be           ClusterIP   10.116.6.105   <none>        8080/TCP   74s
+service/kubernetes   ClusterIP   10.116.0.1     <none>        443/TCP    5m26s
+service/svc1         ClusterIP   10.116.9.247   <none>        8080/TCP   75s
+service/svc2         ClusterIP   10.116.12.54   <none>        8080/TCP   74s
 ```
 
 ### Deploy Istio Gateway and services
@@ -222,8 +232,8 @@ If you would rather run this in a loop:
 If you want, launch the kiali dashboard (default password is `admin/admin`).  In a new window, run:
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.8/samples/addons/prometheus.yaml
-kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.8/samples/addons/kiali.yaml
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.9/samples/addons/prometheus.yaml
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.9/samples/addons/kiali.yaml
 ```
 
 ```
@@ -246,17 +256,50 @@ export SVC_ACCOUNT_KEY=`base64 -w 0 private.pem && echo`
 echo $SERVICE_ACCOUNT_EMAIL
 echo $KEY_ID
 echo $SVC_ACCOUNT_KEY
-
-envsubst < "ext_authz_filter.yaml.tmpl" > "ext_authz_filter.yaml"
 ```
 
-### Apply Authz config
+(doublecheck the `KEY_ID` value...you should only see one keyid (no linebreaks))
 
-Now apply the authz config
+### Apply Authz rules
 
 ```bash
-kubectl apply -f ext_authz_filter.yaml
+envsubst < "ext_authz_rules.yaml.tmpl" > "ext_authz_rules.yaml"
+kubectl apply -f ext_authz_rules.yaml
 ```
+
+This will cause a 'deny' for everyone since we specified some headers that cannot be met (since we didnt' even deploy the authzserver in the first place that'd issue the JWT we just declared above!)
+
+
+### Deploy ExtAuthz server 
+
+Edit mesh-config
+
+```bash
+$ kubectl edit configmap istio -n istio-system
+$ INGRESS_POD_NAME=$(kubectl get po -n istio-system | grep ingressgateway\- | awk '{print$1}'); echo ${INGRESS_POD_NAME};
+$ kubectl delete po/$INGRESS_POD_NAME -n istio-system
+```
+
+add at the top:
+
+```yaml
+apiVersion: v1
+data:
+  mesh: |-
+    extensionProviders:
+    - name: "my-ext-authz-grpc"
+      envoyExtAuthzGrpc:
+        service: "authz.authz-ns.svc.cluster.local"
+        port: "50051"
+```
+
+Apply the authz config
+
+```bash
+envsubst < "ext_authz.yaml.tmpl" > "ext_authz.yaml"
+kubectl apply -f ext_authz.yaml
+```
+
 
 ```bash
 $ kubectl get PeerAuthentication,RequestAuthentication,AuthorizationPolicy -n authz-ns

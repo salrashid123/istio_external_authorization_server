@@ -4,7 +4,7 @@ go 1.12
 
 require (
 	github.com/dgrijalva/jwt-go v3.2.0+incompatible
-	github.com/envoyproxy/go-control-plane v0.9.0
+	github.com/envoyproxy/go-control-plane v0.9.8
 	github.com/gogo/googleapis v1.3.0
 	github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b
 	github.com/lestrrat/go-jwx v0.0.0-20180221005942-b7d4802280ae
@@ -13,5 +13,5 @@ require (
 	github.com/stretchr/testify v1.5.1 // indirect
 	golang.org/x/net v0.0.0-20191108225301-c7154b74f18f
 	google.golang.org/genproto v0.0.0-20191108220845-16a3f7862a1a
-	google.golang.org/grpc v1.25.1
+	google.golang.org/grpc v1.27.0
 )

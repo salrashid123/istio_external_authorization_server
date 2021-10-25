@@ -13,6 +13,8 @@ To that end, this configuration sets up `mTLS`, `RBAC` and `ORIGIN` authenticati
 
 This tutorial is a continuation of the [istio helloworld](https://github.com/salrashid123/istio_helloworld) application.
 
+>> `11/25/21`: Updated for example to NOT use an actual service account.  Instead, use the istio built [gen-jwtpy](https://istio.io/v1.10/docs/tasks/security/authentication/authn-policy/#end-user-authentication) in JWT issuers
+
 >> `3/20/21`: Updated for [istio 1.9: Integrate external authorization system (e.g. OPA, oauth2-proxy, etc.) with Istio using AuthorizationPolicy](https://istio.io/latest/blog/2021/better-external-authz/).   Part of the upgrade is to use the `v3` API (`go-control-plane/envoy/config/core/v3`, `go-control-plane/envoy/service/auth/v3`)
 
 ### References
@@ -30,47 +32,17 @@ The following setup uses a Google Cloud Platform GKE cluster and Service Account
 
 #### Set Environment Variables
 
-On any GCP project, setup env vars and service accounts
+On any GCP project, setup env vars.  
 
 
 ```bash
 export PROJECT_ID=`gcloud config get-value core/project`
 export PROJECT_NUMBER=`gcloud projects describe $PROJECT_ID --format="value(projectNumber)"`
-export SA_NAME=ext-authz-server
-
-export SERVICE_ACCOUNT_EMAIL=$SA_NAME@$PROJECT_ID.iam.gserviceaccount.com
 
 echo $PROJECT_ID
 echo $PROJECT_NUMBER
-echo $SA_NAME
-echo $SERVICE_ACCOUNT_EMAIL
 ```
 
-#### Create Service Account for the Authorization Server
-
-```bash
-gcloud iam service-accounts create $SA_NAME --display-name "Ext-Authz Server Service Account"
-gcloud iam service-accounts keys  create svc_account.p12 --iam-account=$SA_NAME@$PROJECT_ID.iam.gserviceaccount.com --key-file-type=p12
-```
-
-The output should show the keyID (note this down)
-
- note the KeyID (eg)  `created key [7359f4d1a9a049b15d972b803c476f03cdd16957] of type [p12] as [svc_account.p12]`
-
-```bash
-export KEY_ID=`gcloud iam service-accounts keys  list --iam-account=$SERVICE_ACCOUNT_EMAIL --format="value(name)" --filter=keyType=USER_MANAGED`
-echo $KEY_ID
-```
-
-Convert the key to PEM, remove the passphrase and then to base64
-
-```bash
-openssl pkcs12 -in svc_account.p12  -nocerts -nodes -passin pass:notasecret | openssl rsa -out private.pem
-export SVC_ACCOUNT_KEY=`base64 -w 0 private.pem && echo`
-echo $SVC_ACCOUNT_KEY
-```
-
-Note down the base64 encoded form of the key, we will need this and the KeyID later when defining the `ConfigMap` and `Secret` for the authorization server.
 
 ### Build and push images
 
@@ -128,7 +100,7 @@ Create a `1.19+` GKE cluster (do not enable the istio addon GKE provides; we wil
 
 ```bash
 gcloud container  clusters create istio-1 --machine-type "n1-standard-2" --zone us-central1-a  --num-nodes 4 \
-   --enable-ip-alias --cluster-version "1.19" -q
+   --enable-ip-alias --cluster-version "1.20" -q
 
 gcloud container clusters get-credentials istio-1 --zone us-central1-a
 
@@ -243,22 +215,72 @@ istioctl dashboard kiali
 
 ### Generate Authz config
 
+First we need to setup the auth* configs to use a convenient JWT/JWK issuer istio provides (you can use any jWT issuer, ofcourse; this is just a demo...do not use this in production!!!)
+##### Use Istio's sample JWT issuer script
+
+Istio provides a convenient JWT issuer, JWK and script that you can use to for authentication
+
+For example, following script will issue a JWT in the following form and our external authz server will use this to reissue certs
+
+```bash
+wget --no-verbose https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/gen-jwt.py
+wget --no-verbose https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/key.pem
+
+python3 gen-jwt.py -aud some.audience -expire 3600 key.pem
+```
+
+```json
+{
+  "alg": "RS256",
+  "kid": "DHFbpoIUqrY8t2zpA2qXfCmr5VO5ZEr4RzHU_-envvQ",
+  "typ": "JWT"
+}
+
+{
+  "aud": "some.audience",
+  "exp": 1635174518,
+  "iat": 1635170918,
+  "iss": "testing@secure.istio.io",
+  "sub": "testing@secure.istio.io"
+}
+```
+
+You can also see that its `kid` key-id is visible too `"DHFbpoIUqrY8t2zpA2qXfCmr5VO5ZEr4RzHU_-envvQ"`
+
+
+and with a JWK
+
+```json
+$ curl -s https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/jwks.json | jq '.'
+{
+  "keys": [
+    {
+      "e": "AQAB",
+      "kid": "DHFbpoIUqrY8t2zpA2qXfCmr5VO5ZEr4RzHU_-envvQ",
+      "kty": "RSA",
+      "n": "xAE7eB6qugXyCAG3yhh7pkDkT65pHymX-P7KfIupjf59vsdo91bSP9C8H07pSAGQO1MV_xFj9VswgsCg4R6otmg5PV2He95lZdHtOcU5DXIg_pbhLdKXbi66GlVeK6ABZOUW3WYtnNHD-91gVuoeJT_DwtGGcp4ignkgXfkiEm4sw-4sfb4qdt5oLbyVpmW6x9cfa7vs2WTfURiCrBoUqgBo_-4WTiULmmHSGZHOjzwa8WtrtOQGsAFjIbno85jp6MnGGGZPYZbDAa_b3y5u-YpW7ypZrvD8BgtKVjgtQgZhLAGezMt0ua3DRrWnKqTZ0BJ_EyxOGuHJrLsn00fnMQ"
+    }
+  ]
+}
+```
+
+NOTE: we will not be issuing these JWTs.  The external authorization server will use the private key to reissue a JWT intended for a given service.
+
+
 Apply the preset environment variables to  `ext_authz_filter.yaml`:
 
 ```bash
 export PROJECT_ID=`gcloud config get-value core/project`
 export PROJECT_NUMBER=`gcloud projects describe $PROJECT_ID --format="value(projectNumber)"`
-export SA_NAME=ext-authz-server
-export SERVICE_ACCOUNT_EMAIL=$SA_NAME@$PROJECT_ID.iam.gserviceaccount.com
-export KEY_ID=`gcloud iam service-accounts keys  list --iam-account=$SERVICE_ACCOUNT_EMAIL --format="value(name)" --filter=keyType=USER_MANAGED`
-export SVC_ACCOUNT_KEY=`base64 -w 0 private.pem && echo`
+export SERVICE_ACCOUNT_EMAIL="testing@secure.istio.io"
+wget --no-verbose https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/key.pem
+export KEY_ID="DHFbpoIUqrY8t2zpA2qXfCmr5VO5ZEr4RzHU_-envvQ"
+export SVC_ACCOUNT_KEY=`base64 -w 0 key.pem && echo`
 
 echo $SERVICE_ACCOUNT_EMAIL
 echo $KEY_ID
 echo $SVC_ACCOUNT_KEY
 ```
-
-(doublecheck the `KEY_ID` value...you should only see one keyid (no linebreaks))
 
 ### Apply Authz rules
 
@@ -276,8 +298,6 @@ Edit mesh-config
 
 ```bash
 $ kubectl edit configmap istio -n istio-system
-$ INGRESS_POD_NAME=$(kubectl get po -n istio-system | grep ingressgateway\- | awk '{print$1}'); echo ${INGRESS_POD_NAME};
-$ kubectl delete po/$INGRESS_POD_NAME -n istio-system
 ```
 
 add at the top:
@@ -291,6 +311,11 @@ data:
       envoyExtAuthzGrpc:
         service: "authz.authz-ns.svc.cluster.local"
         port: "50051"
+```
+
+```
+$ INGRESS_POD_NAME=$(kubectl get po -n istio-system | grep ingressgateway\- | awk '{print$1}'); echo ${INGRESS_POD_NAME};
+$ kubectl delete po/$INGRESS_POD_NAME -n istio-system
 ```
 
 Apply the authz config
@@ -385,30 +410,36 @@ kubectl logs -n authz-ns $AUTHZ_POD_NAME -c authz-container
 You should see some debug logs as well as the actual reissued JWT header
 
 ```log
-2021/01/14 16:56:03 >>> Authorization called check()
-2021/01/14 16:56:03 Authorization Header Bearer alice
-2021/01/14 16:56:03 Using Claim %v {alice [http://svc1.default.svc.cluster.local:8080/ http://be.default.svc.cluster.local:8080/] { 1610643423  1610643363 ext-authz-server@mineral-minutia-820.iam.gserviceaccount.com 0 ext-authz-server@mineral-minutia-820.iam.gserviceaccount.com}}
-2021/01/14 16:56:03 Issuing outbound Header eyJhbGciOiJSUzI1NiIsImtpZCI6Ijg3MDRjMTk3NDA1NDRhOWU1ZTNlY2VkODI1MTNlZjJmYzQ0NzczMzAiLCJ0eXAiOiJKV1QifQ.eyJ1aWQiOiJhbGljZSIsImF1ZCI6WyJodHRwOi8vc3ZjMS5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsOjgwODAvIiwiaHR0cDovL2JlLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWw6ODA4MC8iXSwiZXhwIjoxNjEwNjQzNDIzLCJpYXQiOjE2MTA2NDMzNjMsImlzcyI6ImV4dC1hdXRoei1zZXJ2ZXJAbWluZXJhbC1taW51dGlhLTgyMC5pYW0uZ3NlcnZpY2VhY2NvdW50LmNvbSIsInN1YiI6ImV4dC1hdXRoei1zZXJ2ZXJAbWluZXJhbC1taW51dGlhLTgyMC5pYW0uZ3NlcnZpY2VhY2NvdW50LmNvbSJ9.ehIywY4h7Yye_vEHEc-zGnftq42Vr3LzuOVlvCv6H2qYMhLE9aQtDO3AOQNwEwll3lOqI3H04pGmcAu7P_vGgjIUzYV_LkZf2Rpgymh_m4voJPpybhHx9Ntnj5myHsXmAb0LiRmLGc2zgw7pA85Ojc1D5AMZS4sp_WcM-E9vZUwEoT4CbutjfhOxbjJrSyju9vdF-ZLcLdzwqTGac-L-rkv2FFd8ZnUJFsGSUBtSh--Yrcim9C-8CXgHE_DHsrnB1-OnmndOBmEpLaHFVcF9fM9PqjGSdTsazblgrT-jRpM2CsnzFZ-qmP74HB6QkhhyP-pw-j8CYwx4wnn5FQ0HwQ
+2021/10/25 14:51:48 >>> Authorization called check()
+2021/10/25 14:51:48 Authorization Header Bearer alice
+2021/10/25 14:51:48 Using Claim %v {alice [http://svc1.default.svc.cluster.local:8080/ http://be.default.svc.cluster.local:8080/] { 1635173568  1635173508 testing@secure.istio.io 0 testing@secure.istio.io}}
+2021/10/25 14:51:48 Issuing outbound Header eyJhbGciOiJSUzI1NiIsImtpZCI6IkRIRmJwb0lVcXJZOHQyenBBMnFYZkNtcjVWTzVaRXI0UnpIVV8tZW52dlEiLCJ0eXAiOiJKV1QifQ.eyJ1aWQiOiJhbGljZSIsImF1ZCI6WyJodHRwOi8vc3ZjMS5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsOjgwODAvIiwiaHR0cDovL2JlLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWw6ODA4MC8iXSwiZXhwIjoxNjM1MTczNTY4LCJpYXQiOjE2MzUxNzM1MDgsImlzcyI6InRlc3RpbmdAc2VjdXJlLmlzdGlvLmlvIiwic3ViIjoidGVzdGluZ0BzZWN1cmUuaXN0aW8uaW8ifQ.lIwA7-zI6LMekWbUiRLWhmwCZltFqxK4R8hKs9pSvKLmDTSrgqjhy3WMaW1BasGxHGJcpuM3ppoA8EDFVEYDPVJtwixUIXjBErDTmLJmzolWlLpzTGfBSFeTqfstbsgBnAKsysSrpslW7Z4wVVO7EKXwHxyaJgcTmlQDeuiywIbqgDvjn2lp6Lx20_mfRvZLq8mkiL7AdhNDmzzcjDcqpJH1PoDNwXs3hu8IdmREhlalORRySg5GSp43cbK8A7Ekl4AXgq3HkZXDWYcLWUGM6uE_cnosqO4KHHzSBWGXhO3xeNnVu8Y-vjmSjwoX1rPZCZqa7WeHg9DsdbPxyca2Yw
 
-2021/01/14 16:56:03 >>> Authorization called check()
-2021/01/14 16:56:03 Authorization Header Bearer alice
-2021/01/14 16:56:03 Using Claim %v {alice [http://svc1.default.svc.cluster.local:8080/ http://be.default.svc.cluster.local:8080/] { 1610643423  1610643363 ext-authz-server@mineral-minutia-820.iam.gserviceaccount.com 0 ext-authz-server@mineral-minutia-820.iam.gserviceaccount.com}}
-2021/01/14 16:56:03 Issuing outbound Header eyJhbGciOiJSUzI1NiIsImtpZCI6Ijg3MDRjMTk3NDA1NDRhOWU1ZTNlY2VkODI1MTNlZjJmYzQ0NzczMzAiLCJ0eXAiOiJKV1QifQ.eyJ1aWQiOiJhbGljZSIsImF1ZCI6WyJodHRwOi8vc3ZjMS5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsOjgwODAvIiwiaHR0cDovL2JlLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWw6ODA4MC8iXSwiZXhwIjoxNjEwNjQzNDIzLCJpYXQiOjE2MTA2NDMzNjMsImlzcyI6ImV4dC1hdXRoei1zZXJ2ZXJAbWluZXJhbC1taW51dGlhLTgyMC5pYW0uZ3NlcnZpY2VhY2NvdW50LmNvbSIsInN1YiI6ImV4dC1hdXRoei1zZXJ2ZXJAbWluZXJhbC1taW51dGlhLTgyMC5pYW0uZ3NlcnZpY2VhY2NvdW50LmNvbSJ9.ehIywY4h7Yye_vEHEc-zGnftq42Vr3LzuOVlvCv6H2qYMhLE9aQtDO3AOQNwEwll3lOqI3H04pGmcAu7P_vGgjIUzYV_LkZf2Rpgymh_m4voJPpybhHx9Ntnj5myHsXmAb0LiRmLGc2zgw7pA85Ojc1D5AMZS4sp_WcM-E9vZUwEoT4CbutjfhOxbjJrSyju9vdF-ZLcLdzwqTGac-L-rkv2FFd8ZnUJFsGSUBtSh--Yrcim9C-8CXgHE_DHsrnB1-OnmndOBmEpLaHFVcF9fM9PqjGSdTsazblgrT-jRpM2CsnzFZ-qmP74HB6QkhhyP-pw-j8CYwx4wnn5FQ0HwQ
+2021/10/25 14:51:48 >>> Authorization called check()
+2021/10/25 14:51:48 Authorization Header Bearer alice
+2021/10/25 14:51:48 Using Claim %v {alice [http://svc1.default.svc.cluster.local:8080/ http://be.default.svc.cluster.local:8080/] { 1635173568  1635173508 testing@secure.istio.io 0 testing@secure.istio.io}}
+2021/10/25 14:51:48 Issuing outbound Header eyJhbGciOiJSUzI1NiIsImtpZCI6IkRIRmJwb0lVcXJZOHQyenBBMnFYZkNtcjVWTzVaRXI0UnpIVV8tZW52dlEiLCJ0eXAiOiJKV1QifQ.eyJ1aWQiOiJhbGljZSIsImF1ZCI6WyJodHRwOi8vc3ZjMS5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsOjgwODAvIiwiaHR0cDovL2JlLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWw6ODA4MC8iXSwiZXhwIjoxNjM1MTczNTY4LCJpYXQiOjE2MzUxNzM1MDgsImlzcyI6InRlc3RpbmdAc2VjdXJlLmlzdGlvLmlvIiwic3ViIjoidGVzdGluZ0BzZWN1cmUuaXN0aW8uaW8ifQ.lIwA7-zI6LMekWbUiRLWhmwCZltFqxK4R8hKs9pSvKLmDTSrgqjhy3WMaW1BasGxHGJcpuM3ppoA8EDFVEYDPVJtwixUIXjBErDTmLJmzolWlLpzTGfBSFeTqfstbsgBnAKsysSrpslW7Z4wVVO7EKXwHxyaJgcTmlQDeuiywIbqgDvjn2lp6Lx20_mfRvZLq8mkiL7AdhNDmzzcjDcqpJH1PoDNwXs3hu8IdmREhlalORRySg5GSp43cbK8A7Ekl4AXgq3HkZXDWYcLWUGM6uE_cnosqO4KHHzSBWGXhO3xeNnVu8Y-vjmSjwoX1rPZCZqa7WeHg9DsdbPxyca2Yw
 ```
 
 note JWT headers include cliams and audiences
 
 ```json
 {
+  "alg": "RS256",
+  "kid": "DHFbpoIUqrY8t2zpA2qXfCmr5VO5ZEr4RzHU_-envvQ",
+  "typ": "JWT"
+}
+
+{
   "uid": "alice",
   "aud": [
     "http://svc1.default.svc.cluster.local:8080/",
     "http://be.default.svc.cluster.local:8080/"
   ],
-  "exp": 1610643423,
-  "iat": 1610643363,
-  "iss": "ext-authz-server@mineral-minutia-820.iam.gserviceaccount.com",
-  "sub": "ext-authz-server@mineral-minutia-820.iam.gserviceaccount.com"
+  "exp": 1635173568,
+  "iat": 1635173508,
+  "iss": "testing@secure.istio.io",
+  "sub": "testing@secure.istio.io"
 }
 ```
 
@@ -525,7 +556,7 @@ spec:
   - issuer: "$SERVICE_ACCOUNT_EMAIL"
     audiences:
     - "http://be.default.svc.cluster.local:8080/"   
-    jwksUri: "https://www.googleapis.com/service_accounts/v1/jwk/$SERVICE_ACCOUNT_EMAIL"  
+    jwksUri: "https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/jwks.json" 
     outputPayloadToHeader: x-jwt-payload  
 ---
 apiVersion: security.istio.io/v1beta1
@@ -777,7 +808,7 @@ spec:
   - issuer: "$SERVICE_ACCOUNT_EMAIL"
     audiences:
     - "http://be.default.svc.cluster.local:8080/"      ##  or CHANGE ORIGIN  <<<<  "Audiences in Jwt are not allowed"
-    jwksUri: "https://www.googleapis.com/service_accounts/v1/jwk/$SERVICE_ACCOUNT_EMAIL"  
+    jwksUri: "https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/jwks.json"  
     # forwardOriginalToken: true
     outputPayloadToHeader: x-jwt-payload   
 ---
@@ -796,7 +827,7 @@ spec:
   - issuer: "$SERVICE_ACCOUNT_EMAIL"
     audiences:
     - "http://be.default.svc.cluster.local:8080/"   ##  or CHANGE ORIGIN  <<<<  "Audiences in Jwt are not allowed"
-    jwksUri: "https://www.googleapis.com/service_accounts/v1/jwk/$SERVICE_ACCOUNT_EMAIL" 
+    jwksUri: "https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/jwks.json"
     # forwardOriginalToken: true
     outputPayloadToHeader: x-jwt-payload
 ---

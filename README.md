@@ -27,8 +27,7 @@ This tutorial is a continuation of the [istio helloworld](https://github.com/sal
 
 ### Setup
 
-The following setup uses a Google Cloud Platform GKE cluster and Service Accounts certificates to issue the custom JWT tokens by the authorization server.  We are using GCP service accounts for the authorization server JWTs simply because each service account on GCP has a convenient public JWK url for validation.
-
+The following setup uses a Google Cloud Platform GKE cluster and a convenient JWK endpoint provided by an Istio sample JWT authentication tutorial.
 
 #### Set Environment Variables
 

@@ -95,7 +95,7 @@ docker push salrashid123/besvc:2
 
 ### Create Cluster and install Istio
 
-Create a `1.19+` GKE cluster (do not enable the istio addon GKE provides; we will install istio `1.9.1` manually)
+Create a `1.20+` GKE cluster (do not enable the istio addon GKE provides; we will install istio `1.9.1` manually)
 
 ```bash
 gcloud container  clusters create istio-1 --machine-type "n1-standard-2" --zone us-central1-a  --num-nodes 4 \
@@ -140,9 +140,9 @@ echo $GATEWAY_IP
 #### Debugging ingress-gateway
 
 ```bash
-kubectl get pods -n istio-system -l app=istio-ingressgateway
-kubectl exec --namespace=istio-system istio-ingressgateway-5f8d978475-k24kz -c istio-proxy -- curl -X POST  http://localhost:15000/logging\?level\=debug
-kubectl logs istio-ingressgateway-5f8d978475-k24kz -n istio-system
+INGRESS_POD_NAME=$(kubectl get po -n istio-system | grep ingressgateway\- | awk '{print$1}'); echo ${INGRESS_POD_NAME};
+kubectl exec --namespace=istio-system $INGRESS_POD_NAME -c istio-proxy -- curl -X POST  http://localhost:15000/logging\?level\=debug
+kubectl logs $INGRESS_POD_NAME-n istio-system
 ```
 
 ### Deploy application
@@ -204,6 +204,7 @@ If you want, launch the kiali dashboard (default password is `admin/admin`).  In
 
 ```bash
 kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.9/samples/addons/prometheus.yaml
+sleep 20
 kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.9/samples/addons/kiali.yaml
 ```
 
@@ -217,9 +218,9 @@ istioctl dashboard kiali
 First we need to setup the auth* configs to use a convenient JWT/JWK issuer istio provides (you can use any jWT issuer, ofcourse; this is just a demo...do not use this in production!!!)
 ##### Use Istio's sample JWT issuer script
 
-Istio provides a convenient JWT issuer, JWK and script that you can use to for authentication
+Istio provides a convenient JWT issuer, JWK and script the gateway will for authentication. You are certainly supposed to use your own JWK/JWT issuer; we're just using this one since it has a convenient JWK endpoint to verify the tokens with
 
-For example, following script will issue a JWT in the following form and our external authz server will use this to reissue certs
+We will use following script to issue a JWT and verify the JWK.  This will be the same key that the external authorization server uses.
 
 ```bash
 wget --no-verbose https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/gen-jwt.py
@@ -246,8 +247,7 @@ python3 gen-jwt.py -aud some.audience -expire 3600 key.pem
 
 You can also see that its `kid` key-id is visible too `"DHFbpoIUqrY8t2zpA2qXfCmr5VO5ZEr4RzHU_-envvQ"`
 
-
-and with a JWK
+The JWK endpoint istio will use to validate a JWT issued by the authorization server is:
 
 ```json
 $ curl -s https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/jwks.json | jq '.'
@@ -299,7 +299,7 @@ Edit mesh-config
 $ kubectl edit configmap istio -n istio-system
 ```
 
-add at the top:
+append the section for `extensionProviders` to the top of the `mesh` definition as such:
 
 ```yaml
 apiVersion: v1
@@ -311,6 +311,8 @@ data:
         service: "authz.authz-ns.svc.cluster.local"
         port: "50051"
 ```
+
+Reload the gateway:
 
 ```
 $ INGRESS_POD_NAME=$(kubectl get po -n istio-system | grep ingressgateway\- | awk '{print$1}'); echo ${INGRESS_POD_NAME};

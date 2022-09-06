@@ -95,11 +95,11 @@ docker push salrashid123/besvc:2
 
 ### Create Cluster and install Istio
 
-Create a `1.20+` GKE cluster (do not enable the istio addon GKE provides; we will install istio `1.9.1` manually)
+Create a `1.20+` GKE cluster (do not enable the istio addon GKE provides; we will install istio `1.15.0` manually)
 
 ```bash
 gcloud container  clusters create istio-1 --machine-type "n1-standard-2" --zone us-central1-a  --num-nodes 4 \
-   --enable-ip-alias --cluster-version "1.20" -q
+   --enable-ip-alias  -q
 
 gcloud container clusters get-credentials istio-1 --zone us-central1-a
 
@@ -108,12 +108,14 @@ kubectl create clusterrolebinding cluster-admin-binding --clusterrole=cluster-ad
 kubectl create ns istio-system
 ```
 
-### Download and install istio 1.9.1
+### Download and install istio 1.15.0
 
 ```bash
-export ISTIO_VERSION=1.9.1
+export ISTIO_VERSION=1.15.0
+export ISTIO_VERSION_MINOR=1.15
 
 wget -O /tmp/istio-$ISTIO_VERSION-linux-amd64.tar.gz https://github.com/istio/istio/releases/download/$ISTIO_VERSION/istio-$ISTIO_VERSION-linux-amd64.tar.gz
+
 tar xvf /tmp/istio-$ISTIO_VERSION-linux-amd64.tar.gz  -C /tmp/
 
 export PATH=/tmp/istio-$ISTIO_VERSION/bin:$PATH
@@ -142,7 +144,7 @@ echo $GATEWAY_IP
 ```bash
 INGRESS_POD_NAME=$(kubectl get po -n istio-system | grep ingressgateway\- | awk '{print$1}'); echo ${INGRESS_POD_NAME};
 kubectl exec --namespace=istio-system $INGRESS_POD_NAME -c istio-proxy -- curl -X POST  http://localhost:15000/logging\?level\=debug
-kubectl logs $INGRESS_POD_NAME-n istio-system
+kubectl logs $INGRESS_POD_NAME -n istio-system
 ```
 
 ### Deploy application
@@ -169,7 +171,7 @@ service/svc2         ClusterIP   10.116.12.54   <none>        8080/TCP   74s
 ### Deploy Istio Gateway and services
 
 ```bash
-$ kubectl apply -f istio-lb-certs.yaml
+kubectl apply -f istio-lb-certs.yaml
 sleep 10
 # regenerate the ingress-gateway to pickup the certs
 INGRESS_POD_NAME=$(kubectl get po -n istio-system | grep ingressgateway\- | awk '{print$1}'); echo ${INGRESS_POD_NAME};
@@ -203,9 +205,9 @@ If you would rather run this in a loop:
 If you want, launch the kiali dashboard (default password is `admin/admin`).  In a new window, run:
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.9/samples/addons/prometheus.yaml
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-$ISTIO_VERSION_MINOR/samples/addons/prometheus.yaml
 sleep 20
-kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.9/samples/addons/kiali.yaml
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-$ISTIO_VERSION_MINOR/samples/addons/kiali.yaml
 ```
 
 ```
@@ -223,8 +225,8 @@ Istio provides a convenient JWT issuer, JWK and script the gateway will for auth
 We will use following script to issue a JWT and verify the JWK.  This will be the same key that the external authorization server uses.
 
 ```bash
-wget --no-verbose https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/gen-jwt.py
-wget --no-verbose https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/key.pem
+wget --no-verbose https://raw.githubusercontent.com/istio/istio/release-$ISTIO_VERSION_MINOR/security/tools/jwt/samples/gen-jwt.py
+wget --no-verbose https://raw.githubusercontent.com/istio/istio/release-$ISTIO_VERSION_MINOR/security/tools/jwt/samples/key.pem
 
 python3 gen-jwt.py -aud some.audience -expire 3600 key.pem
 ```
@@ -272,7 +274,7 @@ Apply the preset environment variables to  `ext_authz_filter.yaml`:
 export PROJECT_ID=`gcloud config get-value core/project`
 export PROJECT_NUMBER=`gcloud projects describe $PROJECT_ID --format="value(projectNumber)"`
 export SERVICE_ACCOUNT_EMAIL="testing@secure.istio.io"
-wget --no-verbose https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/key.pem
+wget --no-verbose https://raw.githubusercontent.com/istio/istio/release-$ISTIO_VERSION_MINOR/security/tools/jwt/samples/key.pem
 export KEY_ID="DHFbpoIUqrY8t2zpA2qXfCmr5VO5ZEr4RzHU_-envvQ"
 export SVC_ACCOUNT_KEY=`base64 -w 0 key.pem && echo`
 
@@ -296,27 +298,52 @@ This will cause a 'deny' for everyone since we specified some headers that canno
 Edit mesh-config
 
 ```bash
-$ kubectl edit configmap istio -n istio-system
+kubectl edit configmap istio -n istio-system
 ```
 
-append the section for `extensionProviders` to the top of the `mesh` definition as such:
+append the section for `extensionProviders` to the top of the `mesh` definition as such (remember to delete the definition of `extensionProviders` already set with `envoyOtelAls`)
 
 ```yaml
-apiVersion: v1
-data:
-  mesh: |-
+apiVersion: v1 
+data: 
+  mesh: |-  
     extensionProviders:
     - name: "my-ext-authz-grpc"
       envoyExtAuthzGrpc:
         service: "authz.authz-ns.svc.cluster.local"
         port: "50051"
+    - name: otel 
+      envoyOtelAls: 
+        port: 4317 
+        service: opentelemetry-collector.istio-system.svc.cluster.local 
+```
+
+please note the name for the provider: `"my-ext-authz-grpc"`.  This is defined in the `ext_authz.yaml` provider filter
+
+```yaml
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: ext-authz
+  namespace: istio-system
+spec:
+  selector:
+    matchLabels:
+      istio: ingressgateway
+  action: CUSTOM
+  provider:
+    name: "my-ext-authz-grpc"
+  rules:
+  - to:
+    - operation:
+        paths: ["/*"]   
 ```
 
 Reload the gateway:
 
-```
-$ INGRESS_POD_NAME=$(kubectl get po -n istio-system | grep ingressgateway\- | awk '{print$1}'); echo ${INGRESS_POD_NAME};
-$ kubectl delete po/$INGRESS_POD_NAME -n istio-system
+```bash
+INGRESS_POD_NAME=$(kubectl get po -n istio-system | grep ingressgateway\- | awk '{print$1}'); echo ${INGRESS_POD_NAME};
+kubectl delete po/$INGRESS_POD_NAME -n istio-system
 ```
 
 Apply the authz config
@@ -557,7 +584,7 @@ spec:
   - issuer: "$SERVICE_ACCOUNT_EMAIL"
     audiences:
     - "http://be.default.svc.cluster.local:8080/"   
-    jwksUri: "https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/jwks.json" 
+    jwksUri: "https://raw.githubusercontent.com/istio/istio/release-$ISTIO_VERSION_MINOR/security/tools/jwt/samples/jwks.json" 
     outputPayloadToHeader: x-jwt-payload  
 ---
 apiVersion: security.istio.io/v1beta1
@@ -789,9 +816,11 @@ If you would rather run these tests in a loop
 
 ---
 
-At this point, the system is setup to to always use mTLS, ORIGIN and PEER authentication plus RBAC.  If you want to verify any component of `PEER`, change the policy to change the service account that is the target service authorization policy accepts and reapply the config.  
+At this point, the system is setup to to always use mTLS, `ORIGIN` and `PEER` authentication plus `RBAC`.  If you want to verify any component of `PEER`, change the policy and change the service account that is the target service authorization policy accepts and reapply the config.  
 
 Change either the settings `RequestAuthentication` _or_  `AuthorizationPolicy` depending on which layer you are testing
+
+(remember to replace the value for `$ISTIO_VERSION_MINOR` )
 
 ```yaml
 ## svc --> be-v1
@@ -809,7 +838,7 @@ spec:
   - issuer: "$SERVICE_ACCOUNT_EMAIL"
     audiences:
     - "http://be.default.svc.cluster.local:8080/"      ##  or CHANGE ORIGIN  <<<<  "Audiences in Jwt are not allowed"
-    jwksUri: "https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/jwks.json"  
+    jwksUri: "https://raw.githubusercontent.com/istio/istio/release-$ISTIO_VERSION_MINOR/security/tools/jwt/samples/jwks.json"  
     # forwardOriginalToken: true
     outputPayloadToHeader: x-jwt-payload   
 ---
@@ -828,7 +857,7 @@ spec:
   - issuer: "$SERVICE_ACCOUNT_EMAIL"
     audiences:
     - "http://be.default.svc.cluster.local:8080/"   ##  or CHANGE ORIGIN  <<<<  "Audiences in Jwt are not allowed"
-    jwksUri: "https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/jwks.json"
+    jwksUri: "https://raw.githubusercontent.com/istio/istio/release-$ISTIO_VERSION_MINOR/security/tools/jwt/samples/jwks.json"
     # forwardOriginalToken: true
     outputPayloadToHeader: x-jwt-payload
 ---

@@ -12,7 +12,7 @@ spec:
   - issuer: "$SERVICE_ACCOUNT_EMAIL"
     audiences:
     - "http://svc1.default.svc.cluster.local:8080/"  
-    jwksUri: "https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/jwks.json"
+    jwksUri: "https://raw.githubusercontent.com/istio/istio/release-$ISTIO_VERSION_MINOR/security/tools/jwt/samples/jwks.json"
     forwardOriginalToken: true
 ---
 apiVersion: security.istio.io/v1beta1
@@ -52,7 +52,7 @@ spec:
   - issuer: "$SERVICE_ACCOUNT_EMAIL"
     audiences:
     - "http://svc2.default.svc.cluster.local:8080/"  
-    jwksUri: "https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/jwks.json" 
+    jwksUri: "https://raw.githubusercontent.com/istio/istio/release-$ISTIO_VERSION_MINOR/security/tools/jwt/samples/jwks.json" 
     forwardOriginalToken: true 
 ---
 apiVersion: security.istio.io/v1beta1
@@ -102,7 +102,7 @@ spec:
   - issuer: "$SERVICE_ACCOUNT_EMAIL"
     audiences:
     - "http://be.default.svc.cluster.local:8080/"   
-    jwksUri: "https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/jwks.json"  
+    jwksUri: "https://raw.githubusercontent.com/istio/istio/release-$ISTIO_VERSION_MINOR/security/tools/jwt/samples/jwks.json"  
     # forwardOriginalToken: true
     outputPayloadToHeader: x-jwt-payload    
 ---
@@ -145,7 +145,7 @@ spec:
   - issuer: "$SERVICE_ACCOUNT_EMAIL"
     audiences:
     - "http://be.default.svc.cluster.local:8080/"   
-    jwksUri: "https://raw.githubusercontent.com/istio/istio/release-1.10/security/tools/jwt/samples/jwks.json" 
+    jwksUri: "https://raw.githubusercontent.com/istio/istio/release-$ISTIO_VERSION_MINOR/security/tools/jwt/samples/jwks.json" 
     # forwardOriginalToken: true
     outputPayloadToHeader: x-jwt-payload
 ---

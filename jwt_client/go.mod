@@ -6,7 +6,8 @@ require (
 	github.com/coreos/go-oidc v2.2.1+incompatible
 	github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b
 	github.com/pquerna/cachecontrol v0.0.0-20180517163645-1555304b9b35 // indirect
-	golang.org/x/net v0.0.0-20200301022130-244492dfa37a
+	github.com/stretchr/testify v1.8.1 // indirect
+	golang.org/x/net v0.7.0
 	golang.org/x/oauth2 v0.0.0-20200107190931-bf48bf16ab8d
 	gopkg.in/square/go-jose.v2 v2.4.1 // indirect
 )

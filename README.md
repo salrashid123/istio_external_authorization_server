@@ -95,10 +95,10 @@ docker push salrashid123/besvc:2
 
 ### Create Cluster and install Istio
 
-Create a `1.20+` GKE cluster (do not enable the istio addon GKE provides; we will install istio `1.15.0` manually)
+Create a `1.20+` GKE cluster (do not enable the istio addon GKE provides; we will install istio `1.21.0` manually)
 
 ```bash
-gcloud container  clusters create istio-1 --machine-type "n1-standard-2" --zone us-central1-a  --num-nodes 4 \
+gcloud container  clusters create istio-1 --machine-type "n1-standard-2" --zone us-central1-a  --num-nodes 3 \
    --enable-ip-alias  -q
 
 gcloud container clusters get-credentials istio-1 --zone us-central1-a
@@ -108,22 +108,22 @@ kubectl create clusterrolebinding cluster-admin-binding --clusterrole=cluster-ad
 kubectl create ns istio-system
 ```
 
-### Download and install istio 1.15.0
+### Download and install istio 1.21.0
 
 ```bash
-export ISTIO_VERSION=1.15.0
-export ISTIO_VERSION_MINOR=1.15
+export ISTIO_VERSION=1.21.0
+export ISTIO_VERSION_MINOR=1.21
 
-wget -O /tmp/istio-$ISTIO_VERSION-linux-amd64.tar.gz https://github.com/istio/istio/releases/download/$ISTIO_VERSION/istio-$ISTIO_VERSION-linux-amd64.tar.gz
-
-tar xvf /tmp/istio-$ISTIO_VERSION-linux-amd64.tar.gz  -C /tmp/
+wget -P /tmp/ https://github.com/istio/istio/releases/download/$ISTIO_VERSION/istio-$ISTIO_VERSION-linux-amd64.tar.gz
+tar xvf /tmp/istio-$ISTIO_VERSION-linux-amd64.tar.gz -C /tmp/
+rm /tmp/istio-$ISTIO_VERSION-linux-amd64.tar.gz
 
 export PATH=/tmp/istio-$ISTIO_VERSION/bin:$PATH
 
 istioctl install --set profile=demo \
  --set meshConfig.enableAutoMtls=true  \
  --set values.gateways.istio-ingressgateway.runAsRoot=true \
- --set meshConfig.outboundTrafficPolicy.mode=REGISTRY_ONLY 
+ --set meshConfig.outboundTrafficPolicy.mode=REGISTRY_ONLY
 
 kubectl label namespace default istio-injection=enabled
 ```
@@ -218,6 +218,7 @@ istioctl dashboard kiali
 ### Generate Authz config
 
 First we need to setup the auth* configs to use a convenient JWT/JWK issuer istio provides (you can use any jWT issuer, ofcourse; this is just a demo...do not use this in production!!!)
+
 ##### Use Istio's sample JWT issuer script
 
 Istio provides a convenient JWT issuer, JWK and script the gateway will for authentication. You are certainly supposed to use your own JWK/JWT issuer; we're just using this one since it has a convenient JWK endpoint to verify the tokens with
@@ -228,6 +229,7 @@ We will use following script to issue a JWT and verify the JWK.  This will be th
 wget --no-verbose https://raw.githubusercontent.com/istio/istio/release-$ISTIO_VERSION_MINOR/security/tools/jwt/samples/gen-jwt.py
 wget --no-verbose https://raw.githubusercontent.com/istio/istio/release-$ISTIO_VERSION_MINOR/security/tools/jwt/samples/key.pem
 
+# may need pip3 install jwcrypto
 python3 gen-jwt.py -aud some.audience -expire 3600 key.pem
 ```
 
@@ -317,6 +319,7 @@ data:
         port: 4317 
         service: opentelemetry-collector.istio-system.svc.cluster.local 
 ```
+![images/config_image.png](images/config_img.png)
 
 please note the name for the provider: `"my-ext-authz-grpc"`.  This is defined in the `ext_authz.yaml` provider filter
 
@@ -1046,6 +1049,6 @@ You can generate an `id-token` using the script found under `jwt_client/` folder
 
 ### Debugging
 
-```
+```bash
 kubectl get pods -n istio-system -o name -l istio=ingressgateway | sed 's|pod/||' | while read -r pod; do istioctl proxy-config log "$pod" -n istio-system --level rbac:debug; done
 ```

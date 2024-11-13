@@ -92,7 +92,7 @@ metadata:
   name: authz-sa
   namespace: authz-ns
 ---
-apiVersion: networking.istio.io/v1alpha3
+apiVersion: networking.istio.io/v1
 kind: VirtualService
 metadata:
   name: authz-virtualservice
@@ -110,19 +110,19 @@ spec:
     - sourceLabels:           
         istio: ingressgateway
 ---
-apiVersion: networking.istio.io/v1alpha3
+apiVersion: networking.istio.io/v1
 kind: DestinationRule
 metadata:
   name: authz-destination
   namespace: authz-ns
 spec:
-  host: "auth.authz-ns.svc.cluster.local"
+  host: "authz.authz-ns.svc.cluster.local"
   trafficPolicy:
     tls:
       mode: ISTIO_MUTUAL
 ---
 ##  ingress --> authz
-apiVersion: security.istio.io/v1beta1
+apiVersion: security.istio.io/v1
 kind: PeerAuthentication
 metadata:
   name: ing-authzserver-peer-authn-policy
@@ -134,7 +134,7 @@ spec:
   mtls:
     mode: STRICT
 ---
-apiVersion: security.istio.io/v1beta1
+apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
  name: ing-authzserver-authz-policy
@@ -149,7 +149,7 @@ spec:
    - source:
        principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
 ---
-apiVersion: security.istio.io/v1beta1
+apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
   name: ext-authz
@@ -167,7 +167,7 @@ spec:
         paths: ["/*"]     
 ---  
 ## default deny all
-apiVersion: security.istio.io/v1beta1
+apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
  name: deny-all-authz-ns

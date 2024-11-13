@@ -37,7 +37,7 @@ import (
 	"encoding/pem"
 	"io/ioutil"
 
-	jwt "github.com/golang-jwt/jwt"
+	jwt "github.com/golang-jwt/jwt/v5"
 	"github.com/golang/glog"
 )
 
@@ -69,7 +69,7 @@ const (
 type MyCustomClaims struct {
 	Uid string   `json:"uid"`
 	Aud []string `json:"aud"` // https://github.com/dgrijalva/jwt-go/pull/308
-	jwt.StandardClaims
+	jwt.RegisteredClaims
 }
 
 type healthServer struct{}
@@ -152,16 +152,16 @@ func (a *AuthorizationServer) Check(ctx context.Context, req *auth.CheckRequest)
 			claims := MyCustomClaims{
 				token,
 				aud,
-				jwt.StandardClaims{
+				jwt.RegisteredClaims{
 					Issuer:  AUTHZ_ISSUER,
 					Subject: AUTHZ_ISSUER,
 					//Audience:  aud,
-					IssuedAt:  time.Now().Unix(),
-					ExpiresAt: time.Now().Add(time.Minute * 1).Unix(),
+					IssuedAt:  &jwt.NumericDate{time.Now()},
+					ExpiresAt: &jwt.NumericDate{time.Now().Add(time.Minute * 1)},
 				},
 			}
 
-			log.Println("Using Claim %v", claims)
+			log.Printf("Using Claim %v", claims)
 			token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 			token.Header["kid"] = AUTHZ_SERVER_KEY_ID
 			ss, err := token.SignedString(privateKey)

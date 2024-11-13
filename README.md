@@ -13,6 +13,7 @@ To that end, this configuration sets up `mTLS`, `RBAC` and `ORIGIN` authenticati
 
 This tutorial is a continuation of the [istio helloworld](https://github.com/salrashid123/istio_helloworld) application.
 
+>> `12/11/24`: Use minikube
 >> `11/25/21`: Updated for example to NOT use an actual service account.  Instead, use the istio built [gen-jwtpy](https://istio.io/v1.10/docs/tasks/security/authentication/authn-policy/#end-user-authentication) in JWT issuers
 
 >> `3/20/21`: Updated for [istio 1.9: Integrate external authorization system (e.g. OPA, oauth2-proxy, etc.) with Istio using AuthorizationPolicy](https://istio.io/latest/blog/2021/better-external-authz/).   Part of the upgrade is to use the `v3` API (`go-control-plane/envoy/config/core/v3`, `go-control-plane/envoy/service/auth/v3`)
@@ -27,19 +28,41 @@ This tutorial is a continuation of the [istio helloworld](https://github.com/sal
 
 ### Setup
 
-The following setup uses a Google Cloud Platform GKE cluster and a convenient JWK endpoint provided by an Istio sample JWT authentication tutorial.
+The following setup uses a minikube and a convenient JWK endpoint provided by an Istio sample JWT authentication tutorial.
 
-#### Set Environment Variables
-
-On any GCP project, setup env vars.  
-
+First install istio
 
 ```bash
-export PROJECT_ID=`gcloud config get-value core/project`
-export PROJECT_NUMBER=`gcloud projects describe $PROJECT_ID --format="value(projectNumber)"`
+minikube start --driver=kvm2  --cpus=4 --kubernetes-version=v1.28 --host-only-cidr 192.168.39.1/24
+minikube addons enable metallb
 
-echo $PROJECT_ID
-echo $PROJECT_NUMBER
+## in a new window
+minikube dashboard
+
+## get the IP, for me it was the following
+$ minikube ip
+192.168.39.1
+
+## setup a loadbalancer metallb, enter the ip range shown below
+minikube addons configure metallb
+# -- Enter Load Balancer Start IP: 192.168.39.104
+# -- Enter Load Balancer End IP: 192.168.39.110
+
+## download and install istio
+export ISTIO_VERSION=1.24.0 
+export ISTIO_VERSION_MINOR=1.24
+
+wget -P /tmp/ https://github.com/istio/istio/releases/download/$ISTIO_VERSION/istio-$ISTIO_VERSION-linux-amd64.tar.gz
+tar xvf /tmp/istio-$ISTIO_VERSION-linux-amd64.tar.gz -C /tmp/
+rm /tmp/istio-$ISTIO_VERSION-linux-amd64.tar.gz
+
+export PATH=/tmp/istio-$ISTIO_VERSION/bin:$PATH
+
+istioctl install --set profile=demo \
+ --set meshConfig.enableAutoMtls=true  \
+ --set values.gateways.istio-ingressgateway.runAsRoot=true \
+ --set meshConfig.outboundTrafficPolicy.mode=REGISTRY_ONLY \
+ --set meshConfig.defaultConfig.gatewayTopology.forwardClientCertDetails=SANITIZE_SET 
 ```
 
 
@@ -67,7 +90,7 @@ The images we will use here has the following endpoints enabled:
 
 To build your own, create a public dockerhub images with the names specified below:
 
-- Build External Aututhorization Server (you can ofcourse use your own dockerhub repo!)
+- Build External Authorization Server (you can ofcourse use your own dockerhub repo!)
 
 ```bash
 cd authz_server/
@@ -93,47 +116,26 @@ docker push salrashid123/besvc:1
 docker push salrashid123/besvc:2
 ```
 
-### Create Cluster and install Istio
-
-Create a `1.20+` GKE cluster (do not enable the istio addon GKE provides; we will install istio `1.21.0` manually)
+### Verify istio is installed
 
 ```bash
-gcloud container  clusters create istio-1 --machine-type "n1-standard-2" --zone us-central1-a  --num-nodes 3 \
-   --enable-ip-alias  -q
-
-gcloud container clusters get-credentials istio-1 --zone us-central1-a
-
-kubectl create clusterrolebinding cluster-admin-binding --clusterrole=cluster-admin --user=$(gcloud config get-value core/account)
-
-kubectl create ns istio-system
-```
-
-### Download and install istio 1.21.0
-
-```bash
-export ISTIO_VERSION=1.21.0
-export ISTIO_VERSION_MINOR=1.21
-
-wget -P /tmp/ https://github.com/istio/istio/releases/download/$ISTIO_VERSION/istio-$ISTIO_VERSION-linux-amd64.tar.gz
-tar xvf /tmp/istio-$ISTIO_VERSION-linux-amd64.tar.gz -C /tmp/
-rm /tmp/istio-$ISTIO_VERSION-linux-amd64.tar.gz
-
-export PATH=/tmp/istio-$ISTIO_VERSION/bin:$PATH
-
-istioctl install --set profile=demo \
- --set meshConfig.enableAutoMtls=true  \
- --set values.gateways.istio-ingressgateway.runAsRoot=true \
- --set meshConfig.outboundTrafficPolicy.mode=REGISTRY_ONLY
-
 kubectl label namespace default istio-injection=enabled
+kubectl get no,po,rc,svc,ing,deployment -n istio-system
 ```
 
-After all the services are in running mode, get the `GATEWAY_IP`
+### Deploy Istio Gateway and services
 
 ```bash
-kubectl get no,po,rc,svc,ing,deployment -n istio-system
+kubectl apply -f istio-lb-certs.yaml
+sleep 10
+## create the ingress gateway
+kubectl apply -f istio-ingress-gateway.yaml
 
-kubectl get svc istio-ingressgateway -n istio-system
+## kill and restart the ingress pod since the LB cert's may not have been loaded
+INGRESS_POD_NAME=$(kubectl get po -n istio-system | grep ingressgateway\- | awk '{print$1}'); echo ${INGRESS_POD_NAME};
+kubectl delete po/$INGRESS_POD_NAME -n istio-system
+
+kubectl apply -f istio-app-config.yaml
 
 export GATEWAY_IP=$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 echo $GATEWAY_IP
@@ -146,6 +148,7 @@ INGRESS_POD_NAME=$(kubectl get po -n istio-system | grep ingressgateway\- | awk 
 kubectl exec --namespace=istio-system $INGRESS_POD_NAME -c istio-proxy -- curl -X POST  http://localhost:15000/logging\?level\=debug
 kubectl logs $INGRESS_POD_NAME -n istio-system
 ```
+
 
 ### Deploy application
 
@@ -168,17 +171,7 @@ service/svc1         ClusterIP   10.116.9.247   <none>        8080/TCP   75s
 service/svc2         ClusterIP   10.116.12.54   <none>        8080/TCP   74s
 ```
 
-### Deploy Istio Gateway and services
 
-```bash
-kubectl apply -f istio-lb-certs.yaml
-sleep 10
-# regenerate the ingress-gateway to pickup the certs
-INGRESS_POD_NAME=$(kubectl get po -n istio-system | grep ingressgateway\- | awk '{print$1}'); echo ${INGRESS_POD_NAME};
-kubectl delete po/$INGRESS_POD_NAME -n istio-system
-kubectl apply -f istio-ingress-gateway.yaml
-kubectl apply -f istio-app-config.yaml
-```
 
 ### Send Traffic
 
@@ -205,14 +198,19 @@ If you would rather run this in a loop:
 If you want, launch the kiali dashboard (default password is `admin/admin`).  In a new window, run:
 
 ```bash
+echo $ISTIO_VERSION 
+echo $ISTIO_VERSION_MINOR
 kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-$ISTIO_VERSION_MINOR/samples/addons/prometheus.yaml
 sleep 20
 kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-$ISTIO_VERSION_MINOR/samples/addons/kiali.yaml
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-$ISTIO_VERSION_MINOR/samples/addons/grafana.yaml
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-$ISTIO_VERSION_MINOR/samples/addons/jaeger.yaml
+
+### in a new window, install prometheus, kaili, jager and grafana
+## open a tunnel and access the kiali dashboard at  http://localhost:20001/kiali (admin/admi)
+kubectl -n istio-system port-forward $(kubectl -n istio-system get pod -l app.kubernetes.io/name=kiali -o jsonpath='{.items[0].metadata.name}') 20001:20001
 ```
 
-```
-istioctl dashboard kiali
-```
 ![images/default-traffic.png](images/default-traffic.png)
 
 ### Generate Authz config
@@ -273,8 +271,6 @@ NOTE: we will not be issuing these JWTs.  The external authorization server will
 Apply the preset environment variables to  `ext_authz_filter.yaml`:
 
 ```bash
-export PROJECT_ID=`gcloud config get-value core/project`
-export PROJECT_NUMBER=`gcloud projects describe $PROJECT_ID --format="value(projectNumber)"`
 export SERVICE_ACCOUNT_EMAIL="testing@secure.istio.io"
 wget --no-verbose https://raw.githubusercontent.com/istio/istio/release-$ISTIO_VERSION_MINOR/security/tools/jwt/samples/key.pem
 export KEY_ID="DHFbpoIUqrY8t2zpA2qXfCmr5VO5ZEr4RzHU_-envvQ"
@@ -359,27 +355,27 @@ kubectl apply -f ext_authz.yaml
 
 ```bash
 $ kubectl get PeerAuthentication,RequestAuthentication,AuthorizationPolicy -n authz-ns
-NAME                                                                     AGE
-peerauthentication.security.istio.io/ing-authzserver-peer-authn-policy   4m20s
+NAME                                                                     MODE     AGE
+peerauthentication.security.istio.io/ing-authzserver-peer-authn-policy   STRICT   13s
 
-NAME                                                                 AGE
-authorizationpolicy.security.istio.io/deny-all-authz-ns              4m19s
-authorizationpolicy.security.istio.io/ing-authzserver-authz-policy   4m20s
-
+NAME                                                                 ACTION   AGE
+authorizationpolicy.security.istio.io/deny-all-authz-ns                       13s
+authorizationpolicy.security.istio.io/ing-authzserver-authz-policy   ALLOW    13s
 
 $ kubectl get PeerAuthentication,RequestAuthentication,AuthorizationPolicy -n default
 NAME                                                                     AGE
-requestauthentication.security.istio.io/ing-svc1-request-authn-policy    4m26s
-requestauthentication.security.istio.io/ing-svc2-request-authn-policy    4m26s
-requestauthentication.security.istio.io/svc-be-v1-request-authn-policy   4m26s
-requestauthentication.security.istio.io/svc-be-v2-request-authn-policy   4m26s
+requestauthentication.security.istio.io/ing-svc1-request-authn-policy    109s
+requestauthentication.security.istio.io/ing-svc2-request-authn-policy    109s
+requestauthentication.security.istio.io/svc-be-v1-request-authn-policy   109s
+requestauthentication.security.istio.io/svc-be-v2-request-authn-policy   109s
 
-NAME                                                            AGE
-authorizationpolicy.security.istio.io/deny-all-default          4m26s
-authorizationpolicy.security.istio.io/ing-svc1-authz-policy     4m26s
-authorizationpolicy.security.istio.io/ing-svc2-authz-policy     4m26s
-authorizationpolicy.security.istio.io/svc1-be-v1-authz-policy   93s
-authorizationpolicy.security.istio.io/svc1-be-v2-authz-policy   4m25s
+NAME                                                            ACTION   AGE
+authorizationpolicy.security.istio.io/deny-all-default                   109s
+authorizationpolicy.security.istio.io/ing-svc1-authz-policy     ALLOW    109s
+authorizationpolicy.security.istio.io/ing-svc2-authz-policy     ALLOW    109s
+authorizationpolicy.security.istio.io/svc1-be-v1-authz-policy   ALLOW    109s
+authorizationpolicy.security.istio.io/svc1-be-v2-authz-policy   ALLOW    109s
+
 ```
 
 ### Access Frontend
@@ -441,15 +437,16 @@ kubectl logs -n authz-ns $AUTHZ_POD_NAME -c authz-container
 You should see some debug logs as well as the actual reissued JWT header
 
 ```log
-2021/10/25 14:51:48 >>> Authorization called check()
-2021/10/25 14:51:48 Authorization Header Bearer alice
-2021/10/25 14:51:48 Using Claim %v {alice [http://svc1.default.svc.cluster.local:8080/ http://be.default.svc.cluster.local:8080/] { 1635173568  1635173508 testing@secure.istio.io 0 testing@secure.istio.io}}
-2021/10/25 14:51:48 Issuing outbound Header eyJhbGciOiJSUzI1NiIsImtpZCI6IkRIRmJwb0lVcXJZOHQyenBBMnFYZkNtcjVWTzVaRXI0UnpIVV8tZW52dlEiLCJ0eXAiOiJKV1QifQ.eyJ1aWQiOiJhbGljZSIsImF1ZCI6WyJodHRwOi8vc3ZjMS5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsOjgwODAvIiwiaHR0cDovL2JlLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWw6ODA4MC8iXSwiZXhwIjoxNjM1MTczNTY4LCJpYXQiOjE2MzUxNzM1MDgsImlzcyI6InRlc3RpbmdAc2VjdXJlLmlzdGlvLmlvIiwic3ViIjoidGVzdGluZ0BzZWN1cmUuaXN0aW8uaW8ifQ.lIwA7-zI6LMekWbUiRLWhmwCZltFqxK4R8hKs9pSvKLmDTSrgqjhy3WMaW1BasGxHGJcpuM3ppoA8EDFVEYDPVJtwixUIXjBErDTmLJmzolWlLpzTGfBSFeTqfstbsgBnAKsysSrpslW7Z4wVVO7EKXwHxyaJgcTmlQDeuiywIbqgDvjn2lp6Lx20_mfRvZLq8mkiL7AdhNDmzzcjDcqpJH1PoDNwXs3hu8IdmREhlalORRySg5GSp43cbK8A7Ekl4AXgq3HkZXDWYcLWUGM6uE_cnosqO4KHHzSBWGXhO3xeNnVu8Y-vjmSjwoX1rPZCZqa7WeHg9DsdbPxyca2Yw
+2024/11/13 12:33:41 Starting gRPC Server at :50051
+2024/11/13 12:34:01 >>> Authorization called check()
+2024/11/13 12:34:01 Authorization Header Bearer alice
+2024/11/13 12:34:01 Using Claim {alice [http://svc1.default.svc.cluster.local:8080/ http://be.default.svc.cluster.local:8080/] {testing@secure.istio.io testing@secure.istio.io [] 2024-11-13 12:35:01.446845225 +0000 UTC m=+79.858574856 <nil> 2024-11-13 12:34:01.446845119 +0000 UTC m=+19.858574750 }}
+2024/11/13 12:34:01 Issuing outbound Header eyJhbGciOiJSUzI1NiIsImtpZCI6IkRIRmJwb0lVcXJZOHQyenBBMnFYZkNtcjVWTzVaRXI0UnpIVV8tZW52dlEiLCJ0eXAiOiJKV1QifQ.eyJ1aWQiOiJhbGljZSIsImF1ZCI6WyJodHRwOi8vc3ZjMS5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsOjgwODAvIiwiaHR0cDovL2JlLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWw6ODA4MC8iXSwiaXNzIjoidGVzdGluZ0BzZWN1cmUuaXN0aW8uaW8iLCJzdWIiOiJ0ZXN0aW5nQHNlY3VyZS5pc3Rpby5pbyIsImV4cCI6MTczMTUwMTMwMSwiaWF0IjoxNzMxNTAxMjQxfQ.Q-itZwt9AkSjpR3JjHxAyMMdhUOMwythPdB3IH-kZspwP4PH87BGyKNs71WzRqTCbOkd9U9EoiGEO16blV_EFpBQHKkHCIp-T070D2eyJu262MXr3tCwsrp0YHl-tx7qyICoLtMe77LNduI8bWj_2Q61fwALnAOslyH0Cj47u7Gq1FQ0-dFXssR8oMXM8eNSaF30oU2SHf_FGrd56TgJ8gCcl0Qhik6qC11ihjKl8S3_ccw1D48iCX8JlA8cWR5JMTqHhwQEEdTZtMJAR7HB0DuSAMKxWu2ENuyE6_lLDQmbLPbwTW6dy1nJa4JQGA9Eo6JtfWf3FHlAc7QuFfvz3Q
+2024/11/13 12:34:01 >>> Authorization called check()
+2024/11/13 12:34:01 Authorization Header Bearer alice
+2024/11/13 12:34:01 Using Claim {alice [http://svc1.default.svc.cluster.local:8080/ http://be.default.svc.cluster.local:8080/] {testing@secure.istio.io testing@secure.istio.io [] 2024-11-13 12:35:01.504861628 +0000 UTC m=+79.916591235 <nil> 2024-11-13 12:34:01.50486156 +0000 UTC m=+19.916591168 }}
+2024/11/13 12:34:01 Issuing outbound Header eyJhbGciOiJSUzI1NiIsImtpZCI6IkRIRmJwb0lVcXJZOHQyenBBMnFYZkNtcjVWTzVaRXI0UnpIVV8tZW52dlEiLCJ0eXAiOiJKV1QifQ.eyJ1aWQiOiJhbGljZSIsImF1ZCI6WyJodHRwOi8vc3ZjMS5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsOjgwODAvIiwiaHR0cDovL2JlLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWw6ODA4MC8iXSwiaXNzIjoidGVzdGluZ0BzZWN1cmUuaXN0aW8uaW8iLCJzdWIiOiJ0ZXN0aW5nQHNlY3VyZS5pc3Rpby5pbyIsImV4cCI6MTczMTUwMTMwMSwiaWF0IjoxNzMxNTAxMjQxfQ.Q-itZwt9AkSjpR3JjHxAyMMdhUOMwythPdB3IH-kZspwP4PH87BGyKNs71WzRqTCbOkd9U9EoiGEO16blV_EFpBQHKkHCIp-T070D2eyJu262MXr3tCwsrp0YHl-tx7qyICoLtMe77LNduI8bWj_2Q61fwALnAOslyH0Cj47u7Gq1FQ0-dFXssR8oMXM8eNSaF30oU2SHf_FGrd56TgJ8gCcl0Qhik6qC11ihjKl8S3_ccw1D48iCX8JlA8cWR5JMTqHhwQEEdTZtMJAR7HB0DuSAMKxWu2ENuyE6_lLDQmbLPbwTW6dy1nJa4JQGA9Eo6JtfWf3FHlAc7QuFfvz3Q
 
-2021/10/25 14:51:48 >>> Authorization called check()
-2021/10/25 14:51:48 Authorization Header Bearer alice
-2021/10/25 14:51:48 Using Claim %v {alice [http://svc1.default.svc.cluster.local:8080/ http://be.default.svc.cluster.local:8080/] { 1635173568  1635173508 testing@secure.istio.io 0 testing@secure.istio.io}}
-2021/10/25 14:51:48 Issuing outbound Header eyJhbGciOiJSUzI1NiIsImtpZCI6IkRIRmJwb0lVcXJZOHQyenBBMnFYZkNtcjVWTzVaRXI0UnpIVV8tZW52dlEiLCJ0eXAiOiJKV1QifQ.eyJ1aWQiOiJhbGljZSIsImF1ZCI6WyJodHRwOi8vc3ZjMS5kZWZhdWx0LnN2Yy5jbHVzdGVyLmxvY2FsOjgwODAvIiwiaHR0cDovL2JlLmRlZmF1bHQuc3ZjLmNsdXN0ZXIubG9jYWw6ODA4MC8iXSwiZXhwIjoxNjM1MTczNTY4LCJpYXQiOjE2MzUxNzM1MDgsImlzcyI6InRlc3RpbmdAc2VjdXJlLmlzdGlvLmlvIiwic3ViIjoidGVzdGluZ0BzZWN1cmUuaXN0aW8uaW8ifQ.lIwA7-zI6LMekWbUiRLWhmwCZltFqxK4R8hKs9pSvKLmDTSrgqjhy3WMaW1BasGxHGJcpuM3ppoA8EDFVEYDPVJtwixUIXjBErDTmLJmzolWlLpzTGfBSFeTqfstbsgBnAKsysSrpslW7Z4wVVO7EKXwHxyaJgcTmlQDeuiywIbqgDvjn2lp6Lx20_mfRvZLq8mkiL7AdhNDmzzcjDcqpJH1PoDNwXs3hu8IdmREhlalORRySg5GSp43cbK8A7Ekl4AXgq3HkZXDWYcLWUGM6uE_cnosqO4KHHzSBWGXhO3xeNnVu8Y-vjmSjwoX1rPZCZqa7WeHg9DsdbPxyca2Yw
 ```
 
 note JWT headers include cliams and audiences
@@ -535,7 +532,7 @@ The configuration also defines Authorization policies on the `svc1`-> `be` traff
 This is done using normal RBAC service identities:
 
 ```yaml
-apiVersion: security.istio.io/v1beta1
+apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
  name: svc1-be-v1-authz-policy
@@ -573,7 +570,7 @@ This means we can use the same JWT token on the backend service if we setup an a
 
 ```yaml
 ## svc --> be-v1
-apiVersion: security.istio.io/v1beta1
+apiVersion: security.istio.io/v1
 kind: RequestAuthentication
 metadata:
  name: svc-be-v1-request-authn-policy
@@ -590,7 +587,7 @@ spec:
     jwksUri: "https://raw.githubusercontent.com/istio/istio/release-$ISTIO_VERSION_MINOR/security/tools/jwt/samples/jwks.json" 
     outputPayloadToHeader: x-jwt-payload  
 ---
-apiVersion: security.istio.io/v1beta1
+apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
  name: svc1-be-v1-authz-policy
@@ -649,7 +646,7 @@ You will also need to set [allowed_client_headers](https://www.envoyproxy.io/doc
 I think the config would be _something_ like this:
 
 ```yaml
-apiVersion: networking.istio.io/v1alpha3
+apiVersion: networking.istio.io/v1
 kind: EnvoyFilter
 metadata:
   name: ext-authz-service
@@ -827,7 +824,7 @@ Change either the settings `RequestAuthentication` _or_  `AuthorizationPolicy` d
 
 ```yaml
 ## svc --> be-v1
-apiVersion: security.istio.io/v1beta1
+apiVersion: security.istio.io/v1
 kind: RequestAuthentication
 metadata:
  name: svc-be-v1-request-authn-policy
@@ -846,7 +843,7 @@ spec:
     outputPayloadToHeader: x-jwt-payload   
 ---
 ## svc --> be-v2
-apiVersion: security.istio.io/v1beta1
+apiVersion: security.istio.io/v1
 kind: RequestAuthentication
 metadata:
  name: svc-be-v2-request-authn-policy
@@ -888,7 +885,7 @@ spec:
    - key: request.auth.claims[aud]
      values: ["http://be.default.svc.cluster.local:8080/"]          
 ---
-apiVersion: security.istio.io/v1beta1
+apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
  name: svc1-be-v2-authz-policy
@@ -940,7 +937,7 @@ curl -s \
 Finally, the external server is attached to the ingress gateway but you could also attach it to a sidecar for an endpoint.  In this mode, the authorization decision is done not at the ingress gateway but locally on a service's sidecar.  To use that mode, define the `EnvoyFilter` workloadLabel and listenerType. eg:
 
 ```yaml
-apiVersion: networking.istio.io/v1alpha3
+apiVersion: networking.istio.io/v1
 kind: EnvoyFilter
 metadata:
   name: svc1-authz-filter
@@ -1016,7 +1013,7 @@ authz.authz-ns.svc.cluster.local:50051     AUTO       STRICT     -          /def
 AUTHZ_POD_NAME=$(kubectl get po -n authz-ns | grep authz\- | awk '{print$1}'); echo ${AUTHZ_POD_NAME};
 istioctl proxy-config log  $AUTHZ_POD_NAME -n authz-ns  --level debug
 kubectl logs -f --tail=0 $AUTHZ_POD_NAME -c authz-container -n  authz-ns
-istioctl dashboard envoy $AUTHZ_POD_NAME.authnz-ns
+istioctl dashboard envoy $AUTHZ_POD_NAME.authz-ns
 istioctl experimental  authz check $AUTHZ_POD_NAME.authz-ns
 ```
 

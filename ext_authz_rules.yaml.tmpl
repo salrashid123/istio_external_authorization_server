@@ -1,5 +1,5 @@
 ## ingress --> svc1
-apiVersion: security.istio.io/v1beta1
+apiVersion: security.istio.io/v1
 kind: RequestAuthentication
 metadata:
  name: ing-svc1-request-authn-policy
@@ -15,7 +15,7 @@ spec:
     jwksUri: "https://raw.githubusercontent.com/istio/istio/release-$ISTIO_VERSION_MINOR/security/tools/jwt/samples/jwks.json"
     forwardOriginalToken: true
 ---
-apiVersion: security.istio.io/v1beta1
+apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
  name: ing-svc1-authz-policy
@@ -39,7 +39,7 @@ spec:
      values: ["http://svc1.default.svc.cluster.local:8080/"]          
 ---
 ## ingress --> svc2
-apiVersion: security.istio.io/v1beta1
+apiVersion: security.istio.io/v1
 kind: RequestAuthentication
 metadata:
  name: ing-svc2-request-authn-policy
@@ -55,7 +55,7 @@ spec:
     jwksUri: "https://raw.githubusercontent.com/istio/istio/release-$ISTIO_VERSION_MINOR/security/tools/jwt/samples/jwks.json" 
     forwardOriginalToken: true 
 ---
-apiVersion: security.istio.io/v1beta1
+apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
  name: ing-svc2-authz-policy
@@ -79,7 +79,7 @@ spec:
      values: ["http://svc2.default.svc.cluster.local:8080/"]        
 ---
 ## default deny all
-apiVersion: security.istio.io/v1beta1
+apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
  name: deny-all-default
@@ -88,7 +88,7 @@ spec:
   {}
 ---
 ## svc --> be-v1
-apiVersion: security.istio.io/v1beta1
+apiVersion: security.istio.io/v1
 kind: RequestAuthentication
 metadata:
  name: svc-be-v1-request-authn-policy
@@ -106,7 +106,7 @@ spec:
     # forwardOriginalToken: true
     outputPayloadToHeader: x-jwt-payload    
 ---
-apiVersion: security.istio.io/v1beta1
+apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
  name: svc1-be-v1-authz-policy
@@ -131,7 +131,7 @@ spec:
      values: ["http://be.default.svc.cluster.local:8080/"]        
 ---
 ## svc --> be-v2
-apiVersion: security.istio.io/v1beta1
+apiVersion: security.istio.io/v1
 kind: RequestAuthentication
 metadata:
  name: svc-be-v2-request-authn-policy
@@ -149,7 +149,7 @@ spec:
     # forwardOriginalToken: true
     outputPayloadToHeader: x-jwt-payload
 ---
-apiVersion: security.istio.io/v1beta1
+apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
  name: svc1-be-v2-authz-policy
